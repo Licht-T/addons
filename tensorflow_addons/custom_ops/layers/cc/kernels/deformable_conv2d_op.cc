@@ -33,8 +33,14 @@ limitations under the License.
 namespace tensorflow {
     namespace addons {
 
-        typedef Eigen::ThreadPoolDevice CPUDevice;
-        typedef Eigen::GpuDevice GPUDevice;
+        using CPUDevice = Eigen::ThreadPoolDevice ;
+        using GPUDevice = Eigen::GpuDevice;
+
+        using Shape5D = Eigen::array<Eigen::DenseIndex, 5>;
+        using Shape3D = Eigen::array<Eigen::DenseIndex, 3>;
+        using Shape2D = Eigen::array<Eigen::DenseIndex, 2>;
+
+        template<typename T, int NDIMS = 1, typename IndexType = Eigen::DenseIndex> using EigenTensor = Eigen::Tensor<T, NDIMS, Eigen::RowMajor, IndexType>;
 
         static const int kMaxParallelImgs = 32;
 
@@ -77,10 +83,6 @@ namespace tensorflow {
                                   int32 weight_groups,
                                   int32 offset_groups
                 ) {
-                    typedef Eigen::array<Eigen::DenseIndex, 5> Shape5D;
-                    typedef Eigen::array<Eigen::DenseIndex, 3> Shape3D;
-                    typedef Eigen::array<Eigen::DenseIndex, 2> Shape2D;
-
                     auto batches = input_batches / n_parallel_imgs;
                     auto input_tensor_reshaped = input_tensor.reshape(
                             Shape5D({batches, n_parallel_imgs, input_channels, input_rows, input_cols})
@@ -118,15 +120,15 @@ namespace tensorflow {
                         for (int g = 0; g < weight_groups; g++) {
                             int32 rows = output_channels / weight_groups;
 
-                            Eigen::Tensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0).reshape(Shape2D({rows, elems}));
-                            Eigen::Tensor<Dtype, 2> column_buffer_mtx = column_buffer_tensor_reshaped.chip(g, 0);
+                            EigenTensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0).reshape(Shape2D({rows, elems}));
+                            EigenTensor<Dtype, 2> column_buffer_mtx = column_buffer_tensor_reshaped.chip(g, 0);
 
                             auto mtx_shape = Shape2D({rows, cols});
                             Eigen::array<Eigen::IndexPair<int>, 1> product_dims = { Eigen::IndexPair<int>(1, 0) };
 
-                            Eigen::Tensor<Dtype, 2> output_mtx = output_tensor_reshaped_batch.chip(g, 0).reshape(
+                            EigenTensor<Dtype, 2> output_mtx = output_tensor_reshaped_batch.chip(g, 0).reshape(
                                     mtx_shape);
-                            Eigen::Tensor<Dtype, 2> mul = filter_mtx.contract(column_buffer_mtx, product_dims);
+                            EigenTensor<Dtype, 2> mul = filter_mtx.contract(column_buffer_mtx, product_dims);
 
                             output_mtx = output_mtx + mul;
                         }
