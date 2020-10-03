@@ -139,10 +139,10 @@ class DeformableConv2D(tf.keras.layers.Layer):
         self.bias_weights = None
 
     def build(self, input_shape):
-        kernel_shape = (self.filters, input_shape[1], self.kernel_size[0], self.kernel_size[1])
+        shape = (self.filters, input_shape[1] // self.weight_groups, self.kernel_size[0], self.kernel_size[1])
 
         self.filter_weights = self.add_weight(
-            name='filter', shape=kernel_shape,
+            name='filter', shape=shape,
             initializer=self.kernel_initializer, regularizer=self.kernel_regularizer,
             constraint=self.kernel_constraint, trainable=True
         )
