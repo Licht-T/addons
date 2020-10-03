@@ -110,7 +110,7 @@ namespace tensorflow {
                     EigenTensor<Dtype, 4> input_tensor,
                     EigenTensor<Dtype, 7> offset_tensor,
                     EigenTensor<Dtype, 6> mask_tensor,
-                    EigenTensor<Dtype, 4> column_buffer_tensor,
+                    typename TTypes<Dtype, 4>::Tensor& column_buffer_tensor,
                     int32 input_channels,
                     int32 filter_rows,
                     int32 filter_cols,
@@ -141,13 +141,13 @@ namespace tensorflow {
                     auto input_tensor_chipped = input_tensor.chip(current_batch, 0).chip(current_input_channel, 0);
                     EigenTensor<Dtype, 5> offset_tensor_chipped = offset_tensor.chip(current_batch, 0).chip(group_index, 0);
 
-                    auto column_buffer_tensor_batch = current_batch;
+                    auto column_buffer_tensor_channel = current_output_channel;
                     for (auto current_filter_row=0; current_filter_row < filter_rows; current_filter_row++) {
                         for (auto current_filter_col=0; current_filter_col < filter_cols; current_filter_col++) {
                             auto offset_h = offset_tensor_chipped(current_filter_row, current_filter_col, 0, current_output_row, current_output_col);
                             auto offset_w = offset_tensor_chipped(current_filter_row, current_filter_col, 1, current_output_row, current_output_col);
 
-                            Dtype mask = 1;
+                            auto mask = Dtype(1);
                             if (use_mask) {
                                 EigenTensor<Dtype, 4> mask_tensor_chipped = mask_tensor.chip(current_batch, 0).chip(group_index, 0);
                                 mask = mask_tensor_chipped(current_filter_row, current_filter_col, current_output_row, current_output_col);
@@ -157,12 +157,12 @@ namespace tensorflow {
                             auto x = (current_output_col * stride_cols - padding_cols) + current_filter_col * dilation_cols + offset_w;
 
                             column_buffer_tensor(
-                                    current_output_channel,
-                                    column_buffer_tensor_batch,
+                                    column_buffer_tensor_channel,
+                                    current_batch,
                                     current_output_row,
                                     current_output_col
                             ) = mask * bilinear_interpolate<Dtype>(input_tensor_chipped, y, x);
-                            column_buffer_tensor_batch++;
+                            column_buffer_tensor_channel++;
                         }
                     }
                 }
