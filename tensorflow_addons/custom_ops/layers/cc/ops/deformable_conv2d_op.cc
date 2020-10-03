@@ -23,7 +23,6 @@ namespace tensorflow {
         using ::tensorflow::shape_inference::InferenceContext;
         using ::tensorflow::shape_inference::ShapeHandle;
         using ::tensorflow::shape_inference::DimensionHandle;
-        // --------------------------------------------------------------------------
 
         REGISTER_OP("Addons>DeformableConv2D")
                 .Input("input: T")
@@ -176,13 +175,14 @@ namespace tensorflow {
                 .Input("output_grad: T")
                 .Output("input_grad: T")
                 .Output("filter_grad: T")
+                .Output("bias_grad: T")
                 .Output("offset_grad: T")
                 .Output("mask_grad: T")
-                .Attr("strides: list(int) = [1, 1, 1, 1]")
+                .Attr("strides: list(int)")
                 .Attr("weight_groups: int")
                 .Attr("offset_groups: int")
                 .Attr(GetPaddingAttrString())
-                .Attr("dilations: list(int) = [1, 1, 1, 1]")
+                .Attr("dilations: list(int)")
                 .Attr("data_format: { 'NCHW' }")
                 .Attr("T: {half, bfloat16, float, double}")
                 .SetShapeFn([](InferenceContext *c) {
