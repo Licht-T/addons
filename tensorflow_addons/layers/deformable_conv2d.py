@@ -35,7 +35,6 @@ def _deformable_conv2d(
         dilations: typing.Union[tuple, list],
         weight_groups: int,
         offset_groups: int,
-        no_bias: bool,
         padding: str,
 ):
     with tf.name_scope('deformable_conv2d'):
@@ -48,7 +47,6 @@ def _deformable_conv2d(
             strides=strides,
             weight_groups=weight_groups,
             offset_groups=offset_groups,
-            no_bias=no_bias,
             padding=padding,
             data_format='NCHW',
             dilations=dilations,
@@ -68,6 +66,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
             dilation_rate: typing.Union[int, tuple, list] = (1, 1),
             weight_groups: int = 1,
             offset_groups: int = 1,
+            use_mask: bool = False,
             use_deformable_conv_bias: bool = False,
             use_filter_conv_bias: bool = False,
             use_mask_conv_bias: bool = False,
@@ -89,6 +88,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
         self.dilation_rate = conv_utils.normalize_tuple(dilation_rate, 2, 'dilation_rate')
         self.weight_groups = weight_groups
         self.offset_groups = offset_groups
+        self.use_mask = use_mask
         self.use_deformable_conv_bias = use_deformable_conv_bias
         self.use_filter_conv_bias = use_filter_conv_bias
         self.use_mask_conv_bias = use_mask_conv_bias
@@ -120,20 +120,23 @@ class DeformableConv2D(tf.keras.layers.Layer):
             bias_constraint=self.bias_constraint,
         )
 
-        self.conv_mask = tf.keras.layers.Conv2D(
-            self.offset_groups * self.kernel_size[0] * self.kernel_size[1],
-            kernel_size=self.kernel_size,
-            strides=(1, 1),
-            padding=self.padding,
-            use_bias=self.use_mask_conv_bias,
-            data_format=self.data_format,
-            kernel_initializer=self.kernel_initializer,
-            bias_initializer=self.bias_initializer,
-            kernel_regularizer=self.kernel_regularizer,
-            bias_regularizer=self.bias_regularizer,
-            kernel_constraint=self.kernel_constraint,
-            bias_constraint=self.bias_constraint,
-        )
+        self.conv_mask = tf.keras.Sequential()
+
+        if self.use_mask:
+            self.conv_mask.add(tf.keras.layers.Conv2D(
+                self.offset_groups * self.kernel_size[0] * self.kernel_size[1],
+                kernel_size=self.kernel_size,
+                strides=(1, 1),
+                padding=self.padding,
+                use_bias=self.use_mask_conv_bias,
+                data_format=self.data_format,
+                kernel_initializer=self.kernel_initializer,
+                bias_initializer=self.bias_initializer,
+                kernel_regularizer=self.kernel_regularizer,
+                bias_regularizer=self.bias_regularizer,
+                kernel_constraint=self.kernel_constraint,
+                bias_constraint=self.bias_constraint,
+            ))
 
         self.filter_weights = None
         self.bias_weights = None
@@ -148,11 +151,15 @@ class DeformableConv2D(tf.keras.layers.Layer):
             initializer=self.kernel_initializer, regularizer=self.kernel_regularizer,
             constraint=self.kernel_constraint, trainable=True
         )
-        self.bias_weights = self.add_weight(
-            name='bias', shape=(self.filters,),
-            initializer=self.bias_initializer, regularizer=self.bias_regularizer,
-            constraint=self.bias_constraint, trainable=True
-        )
+
+        if self.use_deformable_conv_bias:
+            self.bias_weights = self.add_weight(
+                name='bias', shape=(self.filters,),
+                initializer=self.bias_initializer, regularizer=self.bias_regularizer,
+                constraint=self.bias_constraint, trainable=True
+            )
+        else:
+            self.bias_weights = tf.zeros((0,))
 
         self.built = True
 
@@ -172,8 +179,10 @@ class DeformableConv2D(tf.keras.layers.Layer):
         return tf.TensorShape([input_shape[0]] + new_space + [self.filters])
 
     def call(self, inputs, **kwargs):
+        mask_inputs = inputs if self.use_mask else tf.zeros((0, 0, 0, 0))
+
         offset = self.conv_offset(inputs)
-        mask = tf.keras.activations.sigmoid(self.conv_mask(inputs))
+        mask = tf.keras.activations.sigmoid(self.conv_mask(mask_inputs))
 
         inputs = tf.transpose(inputs, [0, 3, 1, 2])
         offset = tf.transpose(offset, [0, 3, 1, 2])
@@ -188,7 +197,6 @@ class DeformableConv2D(tf.keras.layers.Layer):
             strides=self.strides,
             weight_groups=self.weight_groups,
             offset_groups=self.offset_groups,
-            no_bias=not self.use_deformable_conv_bias,
             padding='SAME' if self.padding == 'same' else 'VALID',
             dilations=self.dilation_rate,
         )
@@ -205,6 +213,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
             "dilation_rate": self.dilation_rate,
             "weight_groups": self.weight_groups,
             "offset_groups": self.offset_groups,
+            "use_mask": self.use_mask,
             "use_deformable_conv_bias": self.use_deformable_conv_bias,
             "use_filter_conv_bias": self.use_filter_conv_bias,
             "use_mask_conv_bias": self.use_mask_conv_bias,

@@ -35,7 +35,6 @@ namespace tensorflow {
                 .Attr("strides: list(int)")
                 .Attr("weight_groups: int")
                 .Attr("offset_groups: int")
-                .Attr("no_bias: bool = true")
                 .Attr(GetPaddingAttrString())
                 .Attr("dilations: list(int)")
                 .Attr("data_format: { 'NCHW' }")
@@ -75,6 +74,8 @@ namespace tensorflow {
                     DimensionHandle input_rows_dim = c->Dim(input_shape, 2);
                     DimensionHandle input_cols_dim = c->Dim(input_shape, 3);
 
+                    DimensionHandle bias_dim = c->Dim(bias_shape, 0);
+
                     DimensionHandle output_channels_dim = c->Dim(filter_shape, 0);
                     DimensionHandle filter_channels_dim = c->Dim(filter_shape, 1);
                     DimensionHandle filter_rows_dim = c->Dim(filter_shape, 2);
@@ -90,9 +91,15 @@ namespace tensorflow {
                     DimensionHandle mask_heights_dim = c->Dim(mask_shape, 2);
                     DimensionHandle mask_weights_dim = c->Dim(mask_shape, 3);
 
+                    bool use_mask = InferenceContext::Value(mask_batches_dim) != 0;
+                    bool use_bias = InferenceContext::Value(bias_dim) != 0;
+
                     auto input_batches = InferenceContext::Value(input_batches_dim);
                     auto input_rows = InferenceContext::Value(input_rows_dim);
                     auto input_cols = InferenceContext::Value(input_cols_dim);
+
+                    auto output_channels = InferenceContext::Value(output_channels_dim);
+
                     auto filter_rows = InferenceContext::Value(filter_rows_dim);
                     auto filter_cols = InferenceContext::Value(filter_cols_dim);
 
@@ -102,6 +109,11 @@ namespace tensorflow {
                     auto diration_cols = dilations[1];
 
                     DimensionHandle tmp;
+
+                    if (use_bias) {
+                        TF_RETURN_IF_ERROR(c->WithValue(bias_dim, output_channels, &tmp));
+                    }
+
                     TF_RETURN_IF_ERROR(c->Divide(output_channels_dim, weight_groups, true, &tmp));
                     TF_RETURN_IF_ERROR(c->Divide(input_channels_dim, offset_groups, true, &tmp));
 
@@ -109,12 +121,17 @@ namespace tensorflow {
                     TF_RETURN_IF_ERROR(c->Merge(input_channels_dim, tmp, &tmp));
 
                     TF_RETURN_IF_ERROR(c->WithValue(offset_batches_dim, input_batches, &tmp));
-                    TF_RETURN_IF_ERROR(c->WithValue(mask_batches_dim, input_batches, &tmp));
+
+                    if (use_mask) {
+                        TF_RETURN_IF_ERROR(c->WithValue(mask_batches_dim, input_batches, &tmp));
+                    }
 
                     if (InferenceContext::ValueKnown(filter_rows_dim) && InferenceContext::ValueKnown(filter_cols_dim)) {
                         auto filter_area = filter_rows * filter_cols * offset_groups;
-                        TF_RETURN_IF_ERROR(c->WithValue(mask_channels_dim, filter_area, &tmp));
                         TF_RETURN_IF_ERROR(c->WithValue(offset_channels_dim, 2 * filter_area, &tmp));
+                        if (use_mask) {
+                            TF_RETURN_IF_ERROR(c->WithValue(mask_channels_dim, filter_area, &tmp));
+                        }
                     }
 
                     if (!InferenceContext::ValueKnown(input_rows_dim) || !InferenceContext::ValueKnown(input_cols_dim) ||
@@ -137,11 +154,12 @@ namespace tensorflow {
                             input_cols, filter_cols_eff, stride_cols, padding, &output_cols,
                             &padding_before, &padding_after));
 
-
-                    TF_RETURN_IF_ERROR(c->WithValue(mask_heights_dim, output_rows, &tmp));
-                    TF_RETURN_IF_ERROR(c->WithValue(mask_weights_dim, output_cols, &tmp));
                     TF_RETURN_IF_ERROR(c->WithValue(offset_heights_dim, output_rows, &tmp));
                     TF_RETURN_IF_ERROR(c->WithValue(offset_weights_dim, output_cols, &tmp));
+                    if (use_mask) {
+                        TF_RETURN_IF_ERROR(c->WithValue(mask_heights_dim, output_rows, &tmp));
+                        TF_RETURN_IF_ERROR(c->WithValue(mask_weights_dim, output_cols, &tmp));
+                    }
 
                     c->set_output(0, c->MakeShape({input_batches_dim, output_channels_dim, output_rows, output_cols}));
 
@@ -163,7 +181,6 @@ namespace tensorflow {
                 .Attr("strides: list(int) = [1, 1, 1, 1]")
                 .Attr("weight_groups: int")
                 .Attr("offset_groups: int")
-                .Attr("no_bias: bool = true")
                 .Attr(GetPaddingAttrString())
                 .Attr("dilations: list(int) = [1, 1, 1, 1]")
                 .Attr("data_format: { 'NCHW' }")

@@ -34,6 +34,7 @@ namespace tensorflow {
 
         using Shape8D = Eigen::array<Eigen::DenseIndex, 8>;
         using Shape7D = Eigen::array<Eigen::DenseIndex, 7>;
+        using Shape6D = Eigen::array<Eigen::DenseIndex, 6>;
         using Shape5D = Eigen::array<Eigen::DenseIndex, 5>;
         using Shape4D = Eigen::array<Eigen::DenseIndex, 4>;
         using Shape3D = Eigen::array<Eigen::DenseIndex, 3>;
@@ -126,6 +127,8 @@ namespace tensorflow {
             ) {
                 auto num_kernels = input_channels * output_rows * output_cols * parallel_imgs;
 
+                auto use_mask = mask_tensor.dimension(0) > 0;
+
                 for (auto k=0; k<num_kernels; k++) {
                     const auto current_output_row = k % output_cols;
                     const auto current_output_col = (k / output_cols) % output_rows;
@@ -137,7 +140,6 @@ namespace tensorflow {
 
                     auto input_tensor_chipped = input_tensor.chip(current_batch, 0).chip(current_input_channel, 0);
                     EigenTensor<Dtype, 5> offset_tensor_chipped = offset_tensor.chip(current_batch, 0).chip(group_index, 0);
-                    EigenTensor<Dtype, 4> mask_tensor_chipped = mask_tensor.chip(current_batch, 0).chip(group_index, 0);
 
                     auto column_buffer_tensor_batch = current_batch;
                     for (auto current_filter_row=0; current_filter_row < filter_rows; current_filter_row++) {
@@ -145,7 +147,11 @@ namespace tensorflow {
                             auto offset_h = offset_tensor_chipped(current_filter_row, current_filter_col, 0, current_output_row, current_output_col);
                             auto offset_w = offset_tensor_chipped(current_filter_row, current_filter_col, 1, current_output_row, current_output_col);
 
-                            auto mask = mask_tensor_chipped(current_filter_row, current_filter_col, current_output_row, current_output_col);
+                            Dtype mask = 1;
+                            if (use_mask) {
+                                EigenTensor<Dtype, 4> mask_tensor_chipped = mask_tensor.chip(current_batch, 0).chip(group_index, 0);
+                                mask = mask_tensor_chipped(current_filter_row, current_filter_col, current_output_row, current_output_col);
+                            }
 
                             auto y = (current_output_row * stride_rows - padding_rows) + current_filter_row * dilation_rows + offset_h;
                             auto x = (current_output_col * stride_cols - padding_cols) + current_filter_col * dilation_cols + offset_w;
@@ -192,6 +198,8 @@ namespace tensorflow {
                                   int32 weight_groups,
                                   int32 offset_groups
                 ) {
+                    auto use_mask = mask_tensor.dimension(0) > 0;
+
                     auto batches = input_batches / parallel_imgs;
                     auto input_tensor_reshaped = input_tensor.reshape(
                             Shape5D({batches, parallel_imgs, input_channels, input_rows, input_cols})
@@ -203,9 +211,6 @@ namespace tensorflow {
 
                     auto offset_tensor_reshaped = offset_tensor.reshape(
                             Shape8D({batches, parallel_imgs, offset_groups, filter_rows, filter_cols, 2, output_rows, output_cols})
-                    );
-                    auto mask_tensor_reshaped = mask_tensor.reshape(
-                            Shape7D({batches, parallel_imgs, offset_groups, filter_rows, filter_cols, output_rows, output_cols})
                     );
 
                     auto output_tensor_reshaped = output_tensor.reshape(
@@ -223,8 +228,18 @@ namespace tensorflow {
                     for (auto b = 0; b < batches; b++) {
                         auto input_tensor_reshaped_batch = input_tensor_reshaped.chip(b, 0);
                         auto offset_tensor_reshaped_batch = offset_tensor_reshaped.chip(b, 0);
-                        auto mask_tensor_reshaped_batch = mask_tensor_reshaped.chip(b, 0);
                         auto output_tensor_reshaped_batch = output_tensor_reshaped.chip(b, 0);
+
+                        EigenTensor<Dtype, 6> mask_tensor_reshaped_batch;
+                        if (use_mask) {
+                            mask_tensor_reshaped_batch = mask_tensor
+                                    .reshape(
+                                            Shape7D({batches, parallel_imgs, offset_groups, filter_rows,
+                                                     filter_cols, output_rows, output_cols})
+                                    ).chip(b, 0);
+                        } else {
+                            mask_tensor_reshaped_batch = mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
+                        }
 
                         deformable_im2col<Dtype>(
                                 input_tensor_reshaped_batch,
@@ -272,11 +287,13 @@ namespace tensorflow {
 
                     output_tensor = output_tensor_transposed.eval();
 
-                    auto bias_tensor_broadcasted = bias_tensor
-                            .reshape(Shape4D({1, output_channels, 1, 1}))
-                            .broadcast(Shape4D({input_batches, 1, output_rows, output_cols}));
+                    if (bias_tensor.dimension(0) != 0) {
+                        auto bias_tensor_broadcasted = bias_tensor
+                                .reshape(Shape4D({1, output_channels, 1, 1}))
+                                .broadcast(Shape4D({input_batches, 1, output_rows, output_cols}));
 
-                    output_tensor += bias_tensor_broadcasted;
+                        output_tensor += bias_tensor_broadcasted;
+                    }
 
                     return Status::OK();
                 }
@@ -293,7 +310,6 @@ namespace tensorflow {
                 OP_REQUIRES_OK(context, context->GetAttr("strides", &strides));
                 OP_REQUIRES_OK(context, context->GetAttr("weight_groups", &weight_groups));
                 OP_REQUIRES_OK(context, context->GetAttr("offset_groups", &offset_groups));
-                OP_REQUIRES_OK(context, context->GetAttr("no_bias", &no_bias));
                 OP_REQUIRES_OK(context, context->GetAttr("padding", &padding));
                 OP_REQUIRES_OK(context, context->GetAttr("dilations", &dilations));
                 string data_format_str;
@@ -388,7 +404,6 @@ namespace tensorflow {
             std::vector<int32> strides;
             int32 weight_groups;
             int32 offset_groups;
-            bool no_bias;
             Padding padding;
             std::vector<int32> dilations;
             TensorFormat data_format;
@@ -402,7 +417,6 @@ namespace tensorflow {
 //      OP_REQUIRES_OK(context, context->GetAttr("strides", &strides));
 //      OP_REQUIRES_OK(context, context->GetAttr("weight_groups", &weight_groups));
 //      OP_REQUIRES_OK(context, context->GetAttr("offset_groups", &offset_groups));
-//      OP_REQUIRES_OK(context, context->GetAttr("no_bias", &no_bias));
 //      OP_REQUIRES_OK(context, context->GetAttr("padding", &padding));
 //      OP_REQUIRES_OK(context, context->GetAttr("dilations", &dilations));
 //      std::string data_format_str;
@@ -428,7 +442,6 @@ namespace tensorflow {
 //    std::vector<int32> strides;
 //    int32 weight_groups;
 //    int32 offset_groups;
-//    bool no_bias;
 //    Padding padding;
 //    std::vector<int32> dilations;
 //    TensorFormat data_format;
