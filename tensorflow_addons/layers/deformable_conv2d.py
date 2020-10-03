@@ -38,20 +38,21 @@ def _deformable_conv2d(
         no_bias: bool,
         padding: str,
 ):
-    return _deformable_conv2d_ops_so.ops.addons_deformable_conv2d(
-        input=input,
-        filter=filter,
-        bias=bias,
-        offset=offset,
-        mask=mask,
-        strides=strides,
-        weight_groups=weight_groups,
-        offset_groups=offset_groups,
-        no_bias=no_bias,
-        padding=padding,
-        data_format='NCHW',
-        dilations=dilations,
-    )
+    with tf.name_scope('deformable_conv2d'):
+        return _deformable_conv2d_ops_so.ops.addons_deformable_conv2d(
+            input=input,
+            filter=filter,
+            bias=bias,
+            offset=offset,
+            mask=mask,
+            strides=strides,
+            weight_groups=weight_groups,
+            offset_groups=offset_groups,
+            no_bias=no_bias,
+            padding=padding,
+            data_format='NCHW',
+            dilations=dilations,
+        )
 
 
 @tf.keras.utils.register_keras_serializable(package="Addons")
@@ -173,11 +174,11 @@ class DeformableConv2D(tf.keras.layers.Layer):
         mask = tf.keras.activations.sigmoid(self.conv_mask(inputs))
 
         return _deformable_conv2d(
-            input=inputs,
-            filter=self.filter_weights,
-            bias=self.bias_weights,
-            offset=offset,
-            mask=mask,
+            input=tf.convert_to_tensor(inputs),
+            filter=tf.convert_to_tensor(self.filter_weights),
+            bias=tf.convert_to_tensor(self.bias_weights),
+            offset=tf.convert_to_tensor(offset),
+            mask=tf.convert_to_tensor(mask),
             strides=self.strides,
             weight_groups=self.weight_groups,
             offset_groups=self.offset_groups,
