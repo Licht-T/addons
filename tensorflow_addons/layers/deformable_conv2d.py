@@ -26,11 +26,11 @@ _deformable_conv2d_ops_so = LazySO('custom_ops/layers/_deformable_conv2d_ops.so'
 
 @typechecked
 def _deformable_conv2d(
-        input: tf.Tensor,
-        filter: tf.Tensor,
-        bias: tf.Tensor,
-        offset: tf.Tensor,
-        mask: tf.Tensor,
+        input_tensor: tf.Tensor,
+        filter_tensor: tf.Tensor,
+        bias_tensor: tf.Tensor,
+        offset_tensor: tf.Tensor,
+        mask_tensor: tf.Tensor,
         strides: typing.Union[tuple, list],
         dilations: typing.Union[tuple, list],
         weight_groups: int,
@@ -39,11 +39,11 @@ def _deformable_conv2d(
 ):
     with tf.name_scope('deformable_conv2d'):
         return _deformable_conv2d_ops_so.ops.addons_deformable_conv2d(
-            input=input,
-            filter=filter,
-            bias=bias,
-            offset=offset,
-            mask=mask,
+            input=input_tensor,
+            filter=filter_tensor,
+            bias=bias_tensor,
+            offset=offset_tensor,
+            mask=mask_tensor,
             strides=strides,
             weight_groups=weight_groups,
             offset_groups=offset_groups,
@@ -189,11 +189,11 @@ class DeformableConv2D(tf.keras.layers.Layer):
         mask = tf.transpose(mask, [0, 3, 1, 2])
 
         res = _deformable_conv2d(
-            input=tf.convert_to_tensor(inputs),
-            filter=tf.convert_to_tensor(self.filter_weights),
-            bias=tf.convert_to_tensor(self.bias_weights),
-            offset=tf.convert_to_tensor(offset),
-            mask=tf.convert_to_tensor(mask),
+            input_tensor=tf.convert_to_tensor(inputs),
+            filter_tensor=tf.convert_to_tensor(self.filter_weights),
+            bias_tensor=tf.convert_to_tensor(self.bias_weights),
+            offset_tensor=tf.convert_to_tensor(offset),
+            mask_tensor=tf.convert_to_tensor(mask),
             strides=self.strides,
             weight_groups=self.weight_groups,
             offset_groups=self.offset_groups,

@@ -198,6 +198,8 @@ namespace tensorflow {
                                   int32 weight_groups,
                                   int32 offset_groups
                 ) {
+                    output_tensor.setZero();
+
                     auto use_mask = mask_tensor.dimension(0) > 0;
 
                     auto batches = input_batches / parallel_imgs;
