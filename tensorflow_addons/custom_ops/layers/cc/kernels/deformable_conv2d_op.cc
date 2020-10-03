@@ -65,7 +65,7 @@ namespace tensorflow {
                 auto max_width = input_tensor.dimension(1);
 
                 if (y <= -1 || max_height <= y || x <= -1 || max_width <= x) {
-                    return 0;
+                    return Dtype(0);
                 }
 
                 int y_low = floor(y);
@@ -73,22 +73,22 @@ namespace tensorflow {
                 int y_high = y_low + 1;
                 int w_high = x_low + 1;
 
-                Dtype v1 = 0;
+                auto v1 = Dtype(0);
                 if (y_low >= 0 && x_low >= 0) {
                     v1 = input_tensor(y_low, x_low);
                 }
 
-                Dtype v2 = 0;
+                auto v2 = Dtype(0);
                 if (y_low >= 0 && w_high <= max_width - 1) {
                     v2 = input_tensor(y_low, w_high);
                 }
 
-                Dtype v3 = 0;
+                auto v3 = Dtype(0);
                 if (y_high <= max_height - 1 && x_low >= 0) {
                     v3 = input_tensor(y_high, x_low);
                 }
 
-                Dtype v4 = 0;
+                auto v4 = Dtype(0);
                 if (y_high <= max_height - 1 && w_high <= max_width - 1) {
                     v4 = input_tensor(y_high, w_high);
                 }
@@ -198,7 +198,7 @@ namespace tensorflow {
                                   int32 weight_groups,
                                   int32 offset_groups
                 ) {
-                    output_tensor = output_tensor.setZero();
+                    output_tensor.setZero();
 
                     auto use_mask = mask_tensor.dimension(0) > 0;
 
@@ -273,7 +273,7 @@ namespace tensorflow {
                             auto mtx_shape = Shape2D({rows, cols});
                             Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {Eigen::IndexPair<int>(1, 0)};
 
-                            EigenTensor<Dtype, 2> output_mtx = output_tensor_reshaped_batch.chip(g, 0).reshape(
+                            auto output_mtx = output_tensor_reshaped_batch.chip(g, 0).reshape(
                                     mtx_shape);
                             EigenTensor<Dtype, 2> mul = filter_mtx.contract(column_buffer_mtx, product_dims);
 
