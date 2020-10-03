@@ -57,7 +57,7 @@ namespace tensorflow {
 
         namespace functor {
             template<typename Dtype> Dtype bilinear_interpolate(
-                    EigenConstTensor<Dtype, 2> input_tensor,
+                    EigenTensor<Dtype, 2> input_tensor,
                     Dtype y,
                     Dtype x) {
                 auto max_height = input_tensor.dimension(0);
@@ -106,9 +106,9 @@ namespace tensorflow {
             }
 
             template<typename Dtype> void deformable_im2col(
-                    EigenConstTensor<Dtype, 4> input_tensor,
-                    EigenConstTensor<Dtype, 7> offset_tensor,
-                    EigenConstTensor<Dtype, 6> mask_tensor,
+                    EigenTensor<Dtype, 4> input_tensor,
+                    EigenTensor<Dtype, 7> offset_tensor,
+                    EigenTensor<Dtype, 6> mask_tensor,
                     EigenTensor<Dtype, 4> column_buffer_tensor,
                     int32 input_channels,
                     int32 filter_rows,
@@ -136,8 +136,8 @@ namespace tensorflow {
                     const auto group_index = current_input_channel / (input_channels / offset_groups);
 
                     auto input_tensor_chipped = input_tensor.chip(current_batch, 0).chip(current_input_channel, 0);
-                    EigenConstTensor<Dtype, 5> offset_tensor_chipped = offset_tensor.chip(current_batch, 0).chip(group_index, 0);
-                    EigenConstTensor<Dtype, 4> mask_tensor_chipped = mask_tensor.chip(current_batch, 0).chip(group_index, 0);
+                    EigenTensor<Dtype, 5> offset_tensor_chipped = offset_tensor.chip(current_batch, 0).chip(group_index, 0);
+                    EigenTensor<Dtype, 4> mask_tensor_chipped = mask_tensor.chip(current_batch, 0).chip(group_index, 0);
 
                     auto column_buffer_tensor_batch = current_batch;
                     for (auto current_filter_row=0; current_filter_row < filter_rows; current_filter_row++) {
@@ -249,7 +249,7 @@ namespace tensorflow {
                         for (auto g = 0; g < weight_groups; g++) {
                             int32 rows = output_channels / weight_groups;
 
-                            EigenConstTensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0).reshape(
+                            EigenTensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0).reshape(
                                     Shape2D({rows, elems}));
                             EigenTensor<Dtype, 2> column_buffer_mtx = column_buffer_tensor_reshaped.chip(g, 0);
 
