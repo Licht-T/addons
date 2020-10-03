@@ -43,6 +43,7 @@ namespace tensorflow {
                 .SetShapeFn([](InferenceContext *c) {
                     ShapeHandle input_shape;
                     ShapeHandle filter_shape;
+                    ShapeHandle bias_shape;
                     ShapeHandle offset_shape;
                     ShapeHandle mask_shape;
                     std::vector<int32> strides;
@@ -55,8 +56,9 @@ namespace tensorflow {
 
                     TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 4, &input_shape));
                     TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 4, &filter_shape));
-                    TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 4, &offset_shape));
-                    TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 4, &mask_shape));
+                    TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &bias_shape));
+                    TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 4, &offset_shape));
+                    TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 4, &mask_shape));
                     TF_RETURN_IF_ERROR(c->GetAttr("strides", &strides));
                     TF_RETURN_IF_ERROR(c->GetAttr("weight_groups", &weight_groups));
                     TF_RETURN_IF_ERROR(c->GetAttr("offset_groups", &offset_groups));
