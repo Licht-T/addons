@@ -198,7 +198,7 @@ namespace tensorflow {
                                   int32 weight_groups,
                                   int32 offset_groups
                 ) {
-                    output_tensor.setZero();
+                    output_tensor = output_tensor.setZero();
 
                     auto use_mask = mask_tensor.dimension(0) > 0;
 
