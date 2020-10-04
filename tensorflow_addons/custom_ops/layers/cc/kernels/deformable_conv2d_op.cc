@@ -82,15 +82,38 @@ Dtype bilinear_interpolate(EigenTensor<Dtype, 2> input_tensor, Dtype y,
 }
 
 template <typename Dtype>
-void deformable_im2col(EigenTensor<Dtype, 4> input_tensor,
-                       EigenTensor<Dtype, 7> offset_tensor,
-                       EigenTensor<Dtype, 6> mask_tensor,
+void deformable_im2col(typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
+                       typename TTypes<Dtype, 4>::ConstTensor &_offset_tensor,
+                       typename TTypes<Dtype, 4>::ConstTensor &_mask_tensor,
                        typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
-                       DeformableConv2DParams &p) {
+                       DeformableConv2DParams &p, int32 b) {
+  auto use_mask = _mask_tensor.dimension(0) > 0;
   auto num_kernels =
       p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;
+  auto batches = p.input_batches / p.parallel_imgs;
 
-  auto use_mask = mask_tensor.dimension(0) > 0;
+  EigenTensor<Dtype, 4> input_tensor =
+      _input_tensor
+          .reshape(Shape5D({batches, p.parallel_imgs, p.input_channels,
+                            p.input_rows, p.input_cols}))
+          .chip(b, 0);
+
+  EigenTensor<Dtype, 7> offset_tensor =
+      _offset_tensor
+          .reshape(
+              Shape8D({batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
+                       p.filter_cols, 2, p.output_rows, p.output_cols}))
+          .chip(b, 0);
+
+  EigenTensor<Dtype, 6> mask_tensor =
+      use_mask
+          ? static_cast<EigenTensor<Dtype, 6>>(
+                _mask_tensor
+                    .reshape(Shape7D({batches, p.parallel_imgs, p.offset_groups,
+                                      p.filter_rows, p.filter_cols,
+                                      p.output_rows, p.output_cols}))
+                    .chip(b, 0))
+          : _mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
 
   for (auto k = 0; k < num_kernels; k++) {
     const auto current_output_row = k % p.output_cols;
@@ -110,6 +133,11 @@ void deformable_im2col(EigenTensor<Dtype, 4> input_tensor,
     EigenTensor<Dtype, 5> offset_tensor_chipped =
         offset_tensor.chip(current_batch, 0).chip(group_index, 0);
 
+    EigenTensor<Dtype, 4> mask_tensor_chipped =
+        use_mask ? static_cast<EigenTensor<Dtype, 4>>(
+                       mask_tensor.chip(current_batch, 0).chip(group_index, 0))
+                 : mask_tensor.reshape(Shape4D({0, 0, 0, 0}));
+
     auto column_buffer_tensor_channel = current_output_channel;
     for (auto current_filter_row = 0; current_filter_row < p.filter_rows;
          current_filter_row++) {
@@ -122,13 +150,10 @@ void deformable_im2col(EigenTensor<Dtype, 4> input_tensor,
             offset_tensor_chipped(current_filter_row, current_filter_col, 1,
                                   current_output_row, current_output_col);
 
-        auto mask = Dtype(1);
-        if (use_mask) {
-          EigenTensor<Dtype, 4> mask_tensor_chipped =
-              mask_tensor.chip(current_batch, 0).chip(group_index, 0);
-          mask = mask_tensor_chipped(current_filter_row, current_filter_col,
-                                     current_output_row, current_output_col);
-        }
+        auto mask = use_mask ? mask_tensor_chipped(
+                                   current_filter_row, current_filter_col,
+                                   current_output_row, current_output_col)
+                             : Dtype(1);
 
         auto y = (current_output_row * p.stride_rows - p.padding_rows) +
                  current_filter_row * p.dilation_rows + offset_h;
@@ -146,29 +171,20 @@ void deformable_im2col(EigenTensor<Dtype, 4> input_tensor,
 
 template <typename Dtype>
 void compute_filter_grad(
-    typename TTypes<Dtype, 4>::ConstTensor input_tensor,
-    typename TTypes<Dtype, 4>::ConstTensor filter_tensor,
-    typename TTypes<Dtype, 4>::ConstTensor offset_tensor,
-    typename TTypes<Dtype, 4>::ConstTensor mask_tensor,
-    typename TTypes<Dtype, 4>::ConstTensor output_grad_tensor,
-    typename TTypes<Dtype, 4>::Tensor filter_grad_tensor,
-    typename TTypes<Dtype, 4>::Tensor column_buffer_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &input_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &filter_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &offset_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &mask_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &output_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &filter_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
     DeformableConv2DParams &p) {
   const auto use_mask = mask_tensor.dimension(0) > 0;
+  const auto batches = p.input_batches / p.parallel_imgs;
 
-  filter_grad_tensor.setZero();
-
-  auto batches = p.input_batches / p.parallel_imgs;
-  auto input_tensor_reshaped =
-      input_tensor.reshape(Shape5D({batches, p.parallel_imgs, p.input_channels,
-                                    p.input_rows, p.input_cols}));
   auto filter_grad_tensor_reshaped = filter_grad_tensor.reshape(
       Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
                p.filter_channels, p.filter_rows, p.filter_cols}));
-
-  auto offset_tensor_reshaped = offset_tensor.reshape(
-      Shape8D({batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
-               p.filter_cols, 2, p.output_rows, p.output_cols}));
 
   EigenTensor<Dtype, 5> output_grad_tensor_reshaped =
       output_grad_tensor
@@ -189,28 +205,11 @@ void compute_filter_grad(
       column_buffer_tensor.reshape(Shape3D({p.weight_groups, elems, cols}));
 
   for (auto b = 0; b < batches; b++) {
-    auto input_tensor_reshaped_batch = input_tensor_reshaped.chip(b, 0);
-    auto offset_tensor_reshaped_batch = offset_tensor_reshaped.chip(b, 0);
     auto output_grad_tensor_reshaped_batch =
         output_grad_tensor_reshaped.chip(b, 0);
 
-    // FIXME: Ugly
-    EigenTensor<Dtype, 6> mask_tensor_reshaped_batch;
-    if (use_mask) {
-      mask_tensor_reshaped_batch =
-          mask_tensor
-              .reshape(Shape7D({batches, p.parallel_imgs, p.offset_groups,
-                                p.filter_rows, p.filter_cols, p.output_rows,
-                                p.output_cols}))
-              .chip(b, 0);
-    } else {
-      mask_tensor_reshaped_batch =
-          mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
-    }
-
-    deformable_im2col<Dtype>(
-        input_tensor_reshaped_batch, offset_tensor_reshaped_batch,
-        mask_tensor_reshaped_batch, column_buffer_tensor, p);
+    deformable_im2col<Dtype>(input_tensor, offset_tensor, mask_tensor,
+                             column_buffer_tensor, p, b);
 
     for (auto g = 0; g < p.weight_groups; g++) {
       EigenTensor<Dtype, 2> column_buffer_mtx =
@@ -246,19 +245,11 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype> {
     output_tensor.setZero();
 
     const auto use_bias = bias_tensor.dimension(0) > 0;
-    const auto use_mask = mask_tensor.dimension(0) > 0;
+    const auto batches = p.input_batches / p.parallel_imgs;
 
-    auto batches = p.input_batches / p.parallel_imgs;
-    auto input_tensor_reshaped = input_tensor.reshape(
-        Shape5D({batches, p.parallel_imgs, p.input_channels, p.input_rows,
-                 p.input_cols}));
     auto filter_tensor_reshaped = filter_tensor.reshape(
         Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
                  p.filter_channels, p.filter_rows, p.filter_cols}));
-
-    auto offset_tensor_reshaped = offset_tensor.reshape(
-        Shape8D({batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
-                 p.filter_cols, 2, p.output_rows, p.output_cols}));
 
     // FIXME: Make copy for the better performance
     auto output_tensor_reshaped = output_tensor.reshape(
@@ -275,27 +266,10 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype> {
         column_buffer_tensor.reshape(Shape3D({p.weight_groups, elems, cols}));
 
     for (auto b = 0; b < batches; b++) {
-      auto input_tensor_reshaped_batch = input_tensor_reshaped.chip(b, 0);
-      auto offset_tensor_reshaped_batch = offset_tensor_reshaped.chip(b, 0);
       auto output_tensor_reshaped_batch = output_tensor_reshaped.chip(b, 0);
 
-      // FIXME: Ugly
-      EigenTensor<Dtype, 6> mask_tensor_reshaped_batch;
-      if (use_mask) {
-        mask_tensor_reshaped_batch =
-            mask_tensor
-                .reshape(Shape7D({batches, p.parallel_imgs, p.offset_groups,
-                                  p.filter_rows, p.filter_cols, p.output_rows,
-                                  p.output_cols}))
-                .chip(b, 0);
-      } else {
-        mask_tensor_reshaped_batch =
-            mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
-      }
-
-      deformable_im2col<Dtype>(
-          input_tensor_reshaped_batch, offset_tensor_reshaped_batch,
-          mask_tensor_reshaped_batch, column_buffer_tensor, p);
+      deformable_im2col<Dtype>(input_tensor, offset_tensor, mask_tensor,
+                               column_buffer_tensor, p, b);
 
       for (auto g = 0; g < p.weight_groups; g++) {
         EigenTensor<Dtype, 2> filter_mtx =
@@ -353,10 +327,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype> {
                     typename TTypes<Dtype, 4>::Tensor mask_grad_tensor,
                     typename TTypes<Dtype, 4>::Tensor column_buffer_tensor,
                     DeformableConv2DParams &p) {
+    input_grad_tensor.setZero();
+    filter_grad_tensor.setZero();
+
     const auto use_bias = bias_tensor.dimension(0) > 0;
     const auto use_mask = mask_tensor.dimension(0) > 0;
-
-
 
     filter_grad_tensor.setZero();
     compute_filter_grad<Dtype>(input_tensor, filter_tensor, offset_tensor,
