@@ -82,6 +82,51 @@ Dtype bilinear_interpolate(EigenTensor<Dtype, 2> input_tensor, Dtype y,
 }
 
 template <typename Dtype>
+Dtype get_coordinate_weight(EigenTensor<Dtype, 2> input_tensor, Dtype y,
+                            Dtype x, bool is_y_direction) {
+  auto max_height = input_tensor.dimension(0);
+  auto max_width = input_tensor.dimension(1);
+
+  int y_low = floor(y);
+  int x_low = floor(x);
+  int y_high = y_low + 1;
+  int x_high = x_low + 1;
+
+  bool valid_y_low = max_height > y_low && y_low >= 0;
+  bool valid_y_high = max_height > y_high && y_high >= 0;
+  bool valid_x_low = max_width > x_low && x_low >= 0;
+  bool valid_x_high = max_width > x_high && x_high >= 0;
+
+  auto v_yx = Dtype(0);
+  if (valid_y_low && valid_x_low) {
+    v_yx = input_tensor(y_low, x_low);
+  }
+
+  auto v_yX = Dtype(0);
+  if (valid_y_low && valid_x_high) {
+    v_yX = input_tensor(y_low, x_high);
+  }
+
+  auto v_Yx = Dtype(0);
+  if (valid_y_high && valid_x_low) {
+    v_Yx = input_tensor(y_high, x_low);
+  }
+
+  auto v_YX = Dtype(0);
+  if (valid_y_high && valid_x_high) {
+    v_YX = input_tensor(y_high, x_high);
+  }
+
+  if (is_y_direction) {
+    auto dx = x - x_low;
+    return dx * (v_YX - v_yX) + (1 - dx) * (v_Yx - v_yx);
+  } else {
+    auto dy = y - y_low;
+    return dy * (v_YX - v_Yx) + (1 - dy) * (v_yX - v_yx);
+  }
+}
+
+template <typename Dtype>
 void deformable_im2col(typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
                        typename TTypes<Dtype, 4>::ConstTensor &_offset_tensor,
                        typename TTypes<Dtype, 4>::ConstTensor &_mask_tensor,
@@ -170,11 +215,145 @@ void deformable_im2col(typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
 }
 
 template <typename Dtype>
-void deformable_col2im(typename TTypes<Dtype, 4>::ConstTensor &_offset_tensor,
-                       typename TTypes<Dtype, 4>::ConstTensor &_mask_tensor,
-                       typename TTypes<Dtype, 4>::Tensor &_input_grad_tensor,
-                       typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
-                       DeformableConv2DParams &p, int32 b) {
+void deformable_col2im_for_offset_and_mask(
+    typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &_offset_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &_mask_tensor,
+    typename TTypes<Dtype, 4>::Tensor &_offset_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &_mask_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &_column_buffer_tensor,
+    DeformableConv2DParams &p, int32 b) {
+  auto use_mask = _mask_tensor.dimension(0) > 0;
+  auto batches = p.input_batches / p.parallel_imgs;
+  auto num_kernels = p.output_rows * p.output_cols * 2 * p.filter_rows *
+                     p.filter_cols * p.offset_groups * p.parallel_imgs;
+  auto offset_channels = 2 * p.filter_rows * p.filter_cols * p.offset_groups;
+
+  EigenTensor<Dtype, 4> input_tensor =
+      _input_tensor
+          .reshape(Shape5D({batches, p.parallel_imgs, p.input_channels,
+                            p.input_rows, p.input_cols}))
+          .chip(b, 0);
+
+  Shape8D offset_new_shape({batches, p.parallel_imgs, p.offset_groups,
+                            p.filter_rows, p.filter_cols, 2, p.output_rows,
+                            p.output_cols});
+  EigenTensor<Dtype, 7> offset_tensor =
+      _offset_tensor.reshape(offset_new_shape).chip(b, 0);
+  EigenTensor<Dtype, 7> offset_grad_tensor =
+      _offset_grad_tensor.reshape(offset_new_shape)
+          .chip(b, 0)
+          .reshape(Shape1D({num_kernels}));
+
+  Shape7D mask_new_shape({batches, p.parallel_imgs, p.offset_groups,
+                          p.filter_rows, p.filter_cols, p.output_rows,
+                          p.output_cols});
+  Shape6D mask_zero_6d_shape({0, 0, 0, 0, 0, 0});
+
+  EigenTensor<Dtype, 6> mask_tensor =
+      use_mask ? static_cast<EigenTensor<Dtype, 6>>(
+                     _mask_tensor.reshape(mask_new_shape).chip(b, 0))
+               : _mask_tensor.reshape(mask_zero_6d_shape);
+  EigenTensor<Dtype, 6> mask_grad_tensor =
+      use_mask ? static_cast<EigenTensor<Dtype, 6>>(
+                     _mask_grad_tensor.reshape(mask_new_shape).chip(b, 0))
+               : _mask_grad_tensor.reshape(mask_zero_6d_shape);
+
+  EigenTensor<Dtype, 6> column_buffer_tensor = _column_buffer_tensor.reshape(
+      Shape6D({p.input_channels, p.filter_rows, p.filter_cols, p.parallel_imgs,
+               p.output_rows, p.output_cols}));
+
+  for (auto k = 0; k < num_kernels; k++) {
+    auto offset_grad_value = Dtype(0);
+    auto mask_grad_value = Dtype(0);
+
+    const auto offset_channel_step = p.filter_rows * p.filter_cols;
+
+    const auto current_output_col = k % p.output_cols;
+    const auto current_output_row = (k / p.output_cols) % p.output_rows;
+    const auto current_filter_col =
+        (k / (2 * p.output_rows * p.output_cols)) % p.filter_cols;
+    const auto current_filter_row =
+        (k / (2 * p.output_rows * p.output_cols * p.filter_cols)) %
+        p.filter_rows;
+    const auto current_offset_channel =
+        (k / (p.output_rows * p.output_cols)) % offset_channels;
+    const auto current_batch =
+        (k / (p.output_rows * p.output_cols * offset_channels));
+
+    const auto current_offset_group =
+        current_offset_channel / (2 * offset_channel_step);
+
+    const auto channels_per_offset_group = p.input_channels / p.offset_groups;
+    const auto offset_channel_diff =
+        current_offset_channel - current_offset_group * 2 * offset_channel_step;
+    const auto is_y_direction = offset_channel_diff % 2 == 0;
+
+    const auto current_input_channel =
+        current_offset_group * channels_per_offset_group;
+
+    auto input_tensor_chipped = input_tensor.chip(current_batch, 0);
+
+    for (auto selected_offset_channel = (offset_channel_diff / 2);
+         selected_offset_channel <
+         channels_per_offset_group * offset_channel_step;
+         selected_offset_channel += offset_channel_step) {
+      const auto selected_filter_col = selected_offset_channel % p.filter_cols;
+      const auto selected_filter_row =
+          (selected_offset_channel / p.filter_cols) % p.filter_rows;
+      const auto selected_input_channel =
+          (selected_offset_channel / (p.filter_cols * p.filter_rows));
+
+      const auto offset_h = offset_tensor(
+          current_batch, current_offset_group, selected_filter_row,
+          selected_filter_col, 0, current_output_row, current_output_col);
+      const auto offset_w = offset_tensor(
+          current_batch, current_offset_group, selected_filter_row,
+          selected_filter_col, 1, current_output_row, current_output_col);
+      const auto mask = use_mask ? static_cast<Dtype>(mask_tensor(
+                                       current_batch, current_offset_group,
+                                       selected_filter_row, selected_filter_col,
+                                       current_output_row, current_output_col))
+                                 : Dtype(1);
+
+      const auto y = (current_output_row * p.stride_rows - p.padding_rows) +
+                     selected_filter_row * p.dilation_rows + offset_h;
+      const auto x = (current_output_col * p.stride_cols - p.padding_cols) +
+                     selected_filter_col * p.dilation_cols + offset_w;
+
+      auto filter_data = column_buffer_tensor(
+          selected_input_channel, selected_filter_row, selected_filter_col,
+          current_batch, current_output_row, current_output_col);
+
+      auto img = input_tensor_chipped.chip(selected_input_channel, 0);
+
+      const auto weight =
+          get_coordinate_weight<Dtype>(img, y, x, is_y_direction);
+
+      offset_grad_value += mask * weight * filter_data;
+
+      if (is_y_direction) {
+        mask_grad_value += filter_data * bilinear_interpolate<Dtype>(img, y, x);
+      }
+    }
+
+    offset_grad_tensor(k) = offset_grad_value;
+
+    if (use_mask && is_y_direction) {
+      mask_grad_tensor(current_batch, current_offset_group, current_filter_row,
+                       current_filter_col, current_output_row,
+                       current_output_col) = mask_grad_value;
+    }
+  }
+}
+
+template <typename Dtype>
+void deformable_col2im_for_input(
+    typename TTypes<Dtype, 4>::ConstTensor &_offset_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &_mask_tensor,
+    typename TTypes<Dtype, 4>::Tensor &_input_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
+    DeformableConv2DParams &p, int32 b) {
   auto use_mask = _mask_tensor.dimension(0) > 0;
   auto batches = p.input_batches / p.parallel_imgs;
   auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
@@ -277,35 +456,7 @@ void compute_input_offset_mask_grad(
     typename TTypes<Dtype, 4>::Tensor &mask_grad_tensor,
     typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
     DeformableConv2DParams &p) {
-  auto use_mask = mask_tensor.dimension(0) > 0;
-
   auto batches = p.input_batches / p.parallel_imgs;
-
-  Shape5D input_new_shape(
-      {batches, p.parallel_imgs, p.input_channels, p.input_rows, p.input_cols});
-  EigenTensor<Dtype, 5> input_tensor_reshaped =
-      input_tensor.reshape(input_new_shape);
-  EigenTensor<Dtype, 5> input_grad_tensor_reshaped =
-      input_grad_tensor.reshape(input_new_shape);
-
-  Shape8D offset_new_shape({batches, p.parallel_imgs, p.offset_groups,
-                            p.filter_rows, p.filter_cols, 2, p.output_rows,
-                            p.output_cols});
-  EigenTensor<Dtype, 8> offset_tensor_reshaped =
-      offset_tensor.reshape(offset_new_shape);
-  EigenTensor<Dtype, 8> offset_grad_tensor_reshaped =
-      offset_grad_tensor.reshape(offset_new_shape);
-
-  Shape7D mask_new_shape({0, 0, 0, 0, 0, 0, 0});
-  if (use_mask) {
-    mask_new_shape =
-        Shape7D({batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
-                 p.filter_cols, p.output_rows, p.output_cols});
-  }
-  EigenTensor<Dtype, 7> mask_tensor_reshaped =
-      mask_tensor.reshape(mask_new_shape);
-  EigenTensor<Dtype, 7> mask_grad_tensor_reshaped =
-      mask_grad_tensor.reshape(mask_new_shape);
 
   EigenTensor<Dtype, 5> filter_tensor_reshaped = filter_tensor.reshape(
       Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
@@ -330,13 +481,16 @@ void compute_input_offset_mask_grad(
       column_buffer_tensor.reshape(Shape3D({p.weight_groups, rows, cols}));
 
   for (auto b = 0; b < batches; b++) {
+    // FIXME: Check if correct
+    column_buffer_tensor.setZero();
+
     auto output_grad_tensor_reshaped_chipped =
         output_grad_tensor_reshaped.chip(b, 0);
     for (int g = 0; g < p.weight_groups; g++) {
       EigenTensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0)
                                              .reshape(Shape2D({elems, rows}))
                                              .shuffle(Shape2D({1, 0}));
-      EigenTensor<Dtype, 2> output_grad_mxt =
+      EigenTensor<Dtype, 2> output_grad_mtx =
           output_grad_tensor_reshaped_chipped.chip(g, 0).reshape(
               Shape2D({elems, cols}));
 
@@ -344,13 +498,18 @@ void compute_input_offset_mask_grad(
           Eigen::IndexPair<int>(1, 0)};
 
       EigenTensor<Dtype, 2> mul =
-          filter_mtx.contract(output_grad_mxt, product_dims);
+          filter_mtx.contract(output_grad_mtx, product_dims);
 
-      column_buffer_tensor_reshaped += mul;
+      column_buffer_tensor_reshaped.chip(g, 0) = mul;
     }
 
-    deformable_col2im<Dtype>(offset_tensor, mask_tensor, input_grad_tensor,
-                             column_buffer_tensor, p, b);
+    deformable_col2im_for_offset_and_mask<Dtype>(
+        input_tensor, offset_tensor, mask_tensor, offset_grad_tensor,
+        mask_grad_tensor, column_buffer_tensor, p, b);
+
+    deformable_col2im_for_input<Dtype>(offset_tensor, mask_tensor,
+                                       input_grad_tensor, column_buffer_tensor,
+                                       p, b);
   }
 }
 
