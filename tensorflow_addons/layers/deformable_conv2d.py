@@ -53,6 +53,37 @@ def _deformable_conv2d(
         )
 
 
+@tf.RegisterGradient("Addons>DeformableConv2D")
+def _deformable_conv2d_grad(op, grad):
+    input = op.inputs[0]
+    filter = op.inputs[1]
+    bias = op.inputs[2]
+    offset = op.inputs[3]
+    mask = op.inputs[4]
+    strides = op.get_attr("strides")
+    weight_groups = op.get_attr('weight_groups')
+    offset_groups = op.get_attr('offset_groups')
+    padding = op.get_attr("padding")
+    dilations = op.get_attr("dilations")
+    data_format = op.get_attr("data_format")
+
+    data_grad = _deformable_conv2d_ops_so.ops.addons_deformable_conv2d_back_prop(
+        input,
+        filter,
+        bias,
+        offset,
+        mask,
+        grad,
+        strides=strides,
+        weight_groups=weight_groups,
+        offset_groups=offset_groups,
+        padding=padding,
+        dilations=dilations,
+        data_format=data_format,
+    )
+    return data_grad
+
+
 @tf.keras.utils.register_keras_serializable(package="Addons")
 class DeformableConv2D(tf.keras.layers.Layer):
     @typechecked
