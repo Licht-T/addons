@@ -28,6 +28,7 @@ using Shape5D = Eigen::array<Eigen::DenseIndex, 5>;
 using Shape4D = Eigen::array<Eigen::DenseIndex, 4>;
 using Shape3D = Eigen::array<Eigen::DenseIndex, 3>;
 using Shape2D = Eigen::array<Eigen::DenseIndex, 2>;
+using Shape1D = Eigen::array<Eigen::DenseIndex, 1>;
 
 template <typename T, int NDIMS = 1, typename IndexType = Eigen::DenseIndex>
 using EigenTensor = Eigen::Tensor<T, NDIMS, Eigen::RowMajor, IndexType>;

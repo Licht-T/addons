@@ -116,8 +116,8 @@ void deformable_im2col(typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
           : _mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
 
   for (auto k = 0; k < num_kernels; k++) {
-    const auto current_output_row = k % p.output_cols;
-    const auto current_output_col = (k / p.output_cols) % p.output_rows;
+    const auto current_output_col = k % p.output_cols;
+    const auto current_output_row = (k / p.output_cols) % p.output_rows;
     const auto current_batch =
         (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;
     const auto current_input_channel =
@@ -166,6 +166,191 @@ void deformable_im2col(typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
         column_buffer_tensor_channel++;
       }
     }
+  }
+}
+
+template <typename Dtype>
+void deformable_col2im(typename TTypes<Dtype, 4>::ConstTensor &_offset_tensor,
+                       typename TTypes<Dtype, 4>::ConstTensor &_mask_tensor,
+                       typename TTypes<Dtype, 4>::Tensor &_input_grad_tensor,
+                       typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
+                       DeformableConv2DParams &p, int32 b) {
+  auto use_mask = _mask_tensor.dimension(0) > 0;
+  auto batches = p.input_batches / p.parallel_imgs;
+  auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
+                     p.output_rows * p.output_cols * p.parallel_imgs;
+
+  EigenTensor<Dtype, 7> offset_tensor =
+      _offset_tensor
+          .reshape(
+              Shape8D({batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
+                       p.filter_cols, 2, p.output_rows, p.output_cols}))
+          .chip(b, 0);
+
+  EigenTensor<Dtype, 6> mask_tensor =
+      use_mask
+          ? static_cast<EigenTensor<Dtype, 6>>(
+                _mask_tensor
+                    .reshape(Shape7D({batches, p.parallel_imgs, p.offset_groups,
+                                      p.filter_rows, p.filter_cols,
+                                      p.output_rows, p.output_cols}))
+                    .chip(b, 0))
+          : _mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
+
+  EigenTensor<Dtype, 4> input_grad_tensor =
+      _input_grad_tensor
+          .reshape(Shape5D({batches, p.parallel_imgs, p.input_channels,
+                            p.input_rows, p.input_cols}))
+          .chip(b, 0);
+
+  EigenTensor<Dtype, 1> column_buffer_tensor_flattened =
+      column_buffer_tensor.reshape(Shape1D({num_kernels}));
+
+  for (auto k = 0; k < num_kernels; k++) {
+    const auto current_output_col = k % p.output_cols;
+    const auto current_output_row = (k / p.output_cols) % p.output_rows;
+    const auto current_batch =
+        (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;
+
+    const auto current_filter_col =
+        (k / (p.output_rows * p.output_cols * p.parallel_imgs)) % p.filter_cols;
+    const auto current_filter_row = (k / (p.output_rows * p.output_cols *
+                                          p.parallel_imgs * p.filter_cols)) %
+                                    p.filter_rows;
+    const auto current_channel =
+        k / (p.output_rows * p.output_cols * p.parallel_imgs * p.filter_rows *
+             p.filter_cols);
+
+    const auto current_offset_group =
+        current_channel / (p.input_channels / p.offset_groups);
+
+    EigenTensor<Dtype, 3> offset_tensor_chipped =
+        offset_tensor.chip(current_batch, 0)
+            .chip(current_offset_group, 0)
+            .chip(current_filter_row, 0)
+            .chip(current_filter_col, 0);
+
+    auto mask = use_mask ? mask_tensor(current_batch, current_offset_group,
+                                       current_filter_row, current_filter_col,
+                                       current_output_row, current_output_col)
+                         : Dtype(1);
+
+    auto offset_h =
+        offset_tensor_chipped(0, current_output_row, current_output_col);
+    auto offset_w =
+        offset_tensor_chipped(1, current_output_row, current_output_col);
+
+    const auto y = (current_output_row * p.stride_rows - p.padding_rows) +
+                   current_filter_row * p.dilation_rows + offset_h;
+    const auto x = (current_output_col * p.stride_cols - p.padding_cols) +
+                   current_filter_col * p.dilation_cols + offset_w;
+
+    for (auto dy = -1; dy <= 1; dy++) {
+      for (auto dx = -1; dx <= 1; dx++) {
+        auto current_input_row = int(y) + dy;
+        auto current_input_col = int(x) + dx;
+        if (p.input_rows > current_input_row && current_input_row >= 0 &&
+            p.input_cols > current_input_col && current_input_col >= 0 &&
+            std::abs(y - current_input_row) < 1 &&
+            std::abs(x - current_input_col) < 1) {
+          auto weight = (1 - std::abs(y - current_input_row)) *
+                        (1 - std::abs(x - current_input_col));
+
+          input_grad_tensor(current_batch, current_channel, current_input_row,
+                            current_input_col) +=
+              mask * weight * column_buffer_tensor_flattened(k);
+        }
+      }
+    }
+  }
+}
+
+template <typename Dtype>
+void compute_input_offset_mask_grad(
+    typename TTypes<Dtype, 4>::ConstTensor &input_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &filter_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &offset_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &mask_tensor,
+    typename TTypes<Dtype, 4>::ConstTensor &output_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &input_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &offset_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &mask_grad_tensor,
+    typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
+    DeformableConv2DParams &p) {
+  auto use_mask = mask_tensor.dimension(0) > 0;
+
+  auto batches = p.input_batches / p.parallel_imgs;
+
+  Shape5D input_new_shape(
+      {batches, p.parallel_imgs, p.input_channels, p.input_rows, p.input_cols});
+  EigenTensor<Dtype, 5> input_tensor_reshaped =
+      input_tensor.reshape(input_new_shape);
+  EigenTensor<Dtype, 5> input_grad_tensor_reshaped =
+      input_grad_tensor.reshape(input_new_shape);
+
+  Shape8D offset_new_shape({batches, p.parallel_imgs, p.offset_groups,
+                            p.filter_rows, p.filter_cols, 2, p.output_rows,
+                            p.output_cols});
+  EigenTensor<Dtype, 8> offset_tensor_reshaped =
+      offset_tensor.reshape(offset_new_shape);
+  EigenTensor<Dtype, 8> offset_grad_tensor_reshaped =
+      offset_grad_tensor.reshape(offset_new_shape);
+
+  Shape7D mask_new_shape({0, 0, 0, 0, 0, 0, 0});
+  if (use_mask) {
+    mask_new_shape =
+        Shape7D({batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
+                 p.filter_cols, p.output_rows, p.output_cols});
+  }
+  EigenTensor<Dtype, 7> mask_tensor_reshaped =
+      mask_tensor.reshape(mask_new_shape);
+  EigenTensor<Dtype, 7> mask_grad_tensor_reshaped =
+      mask_grad_tensor.reshape(mask_new_shape);
+
+  EigenTensor<Dtype, 5> filter_tensor_reshaped = filter_tensor.reshape(
+      Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
+               p.filter_channels, p.filter_rows, p.filter_cols}));
+
+  EigenTensor<Dtype, 5> output_grad_tensor_reshaped =
+      output_grad_tensor
+          .reshape(Shape5D({batches, p.parallel_imgs, p.output_channels,
+                            p.output_rows, p.output_cols}))
+          .shuffle(Shape5D({0, 2, 1, 3, 4}))
+          .reshape(Shape5D({batches, p.weight_groups,
+                            p.output_channels / p.weight_groups,
+                            p.parallel_imgs * p.output_rows, p.output_cols}));
+
+  // input_channels * filter_rows * filter_cols / weight_groups ==
+  // filter_channels * filter_rows * filter_cols
+  const auto rows = p.filter_channels * p.filter_rows * p.filter_cols;
+  const auto elems = p.output_channels / p.weight_groups;
+  const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
+
+  auto column_buffer_tensor_reshaped =
+      column_buffer_tensor.reshape(Shape3D({p.weight_groups, rows, cols}));
+
+  for (auto b = 0; b < batches; b++) {
+    auto output_grad_tensor_reshaped_chipped =
+        output_grad_tensor_reshaped.chip(b, 0);
+    for (int g = 0; g < p.weight_groups; g++) {
+      EigenTensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0)
+                                             .reshape(Shape2D({elems, rows}))
+                                             .shuffle(Shape2D({1, 0}));
+      EigenTensor<Dtype, 2> output_grad_mxt =
+          output_grad_tensor_reshaped_chipped.chip(g, 0).reshape(
+              Shape2D({elems, cols}));
+
+      Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
+          Eigen::IndexPair<int>(1, 0)};
+
+      EigenTensor<Dtype, 2> mul =
+          filter_mtx.contract(output_grad_mxt, product_dims);
+
+      column_buffer_tensor_reshaped += mul;
+    }
+
+    deformable_col2im<Dtype>(offset_tensor, mask_tensor, input_grad_tensor,
+                             column_buffer_tensor, p, b);
   }
 }
 
@@ -329,11 +514,15 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype> {
                     DeformableConv2DParams &p) {
     input_grad_tensor.setZero();
     filter_grad_tensor.setZero();
+    column_buffer_tensor.setZero();
 
     const auto use_bias = bias_tensor.dimension(0) > 0;
-    const auto use_mask = mask_tensor.dimension(0) > 0;
 
-    filter_grad_tensor.setZero();
+    compute_input_offset_mask_grad<Dtype>(
+        input_tensor, filter_tensor, offset_tensor, mask_tensor,
+        output_grad_tensor, input_grad_tensor, offset_grad_tensor,
+        mask_grad_tensor, column_buffer_tensor, p);
+
     compute_filter_grad<Dtype>(input_tensor, filter_tensor, offset_tensor,
                                mask_tensor, output_grad_tensor,
                                filter_grad_tensor, column_buffer_tensor, p);
@@ -374,9 +563,6 @@ class DeformableConv2DOp : public OpKernel {
 
     const TensorShape &input_shape = input_tensor.shape();
     const TensorShape &filter_shape = filter_tensor.shape();
-    const TensorShape &bias_shape = bias_tensor.shape();
-    const TensorShape &offset_shape = offset_tensor.shape();
-    const TensorShape &mask_shape = mask_tensor.shape();
 
     auto input_batches = input_shape.dim_size(0);
     auto input_channels = input_shape.dim_size(1);
