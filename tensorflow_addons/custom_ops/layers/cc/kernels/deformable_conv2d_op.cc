@@ -828,7 +828,7 @@ class DeformableConv2DGradOp : public OpKernel {
     const Tensor &mask_tensor = context->input(4);
     const Tensor &output_grad_tensor = context->input(5);
 
-    const TensorShape &inpudeformable_col2im_for_offset_and_maskt_shape = input_tensor.shape();
+    const TensorShape &input_shape = input_tensor.shape();
     const TensorShape &filter_shape = filter_tensor.shape();
     const TensorShape &bias_shape = bias_tensor.shape();
     const TensorShape &offset_shape = offset_tensor.shape();
