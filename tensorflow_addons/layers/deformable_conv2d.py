@@ -67,7 +67,7 @@ def _deformable_conv2d_grad(op, grad):
     dilations = op.get_attr("dilations")
     data_format = op.get_attr("data_format")
 
-    data_grad = _deformable_conv2d_ops_so.ops.addons_deformable_conv2d_back_prop(
+    data_grad = _deformable_conv2d_ops_so.ops.addons_deformable_conv2d_grad(
         input,
         filter,
         bias,

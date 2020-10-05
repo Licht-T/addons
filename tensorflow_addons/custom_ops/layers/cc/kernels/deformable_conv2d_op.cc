@@ -877,17 +877,17 @@ class DeformableConv2DGradOp : public OpKernel {
     OP_REQUIRES_OK(
         context, context->allocate_output(0, input_shape, &input_grad_tensor));
     Tensor *filter_grad_tensor = nullptr;
-    OP_REQUIRES_OK(context, context->allocate_output(0, filter_shape,
+    OP_REQUIRES_OK(context, context->allocate_output(1, filter_shape,
                                                      &filter_grad_tensor));
     Tensor *bias_grad_tensor = nullptr;
     OP_REQUIRES_OK(context,
-                   context->allocate_output(0, bias_shape, &bias_grad_tensor));
+                   context->allocate_output(2, bias_shape, &bias_grad_tensor));
     Tensor *offset_grad_tensor = nullptr;
-    OP_REQUIRES_OK(context, context->allocate_output(0, offset_shape,
+    OP_REQUIRES_OK(context, context->allocate_output(3, offset_shape,
                                                      &offset_grad_tensor));
     Tensor *mask_grad_tensor = nullptr;
     OP_REQUIRES_OK(context,
-                   context->allocate_output(0, mask_shape, &mask_grad_tensor));
+                   context->allocate_output(4, mask_shape, &mask_grad_tensor));
 
     DeformableConv2DParams p{};
     p.input_batches = input_batches;
