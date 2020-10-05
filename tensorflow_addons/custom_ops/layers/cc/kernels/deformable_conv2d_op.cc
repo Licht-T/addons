@@ -289,9 +289,6 @@ void deformable_col2im_for_offset_and_mask(
         current_offset_channel - current_offset_group * 2 * offset_channel_step;
     const auto is_y_direction = offset_channel_diff % 2 == 0;
 
-    const auto current_input_channel =
-        current_offset_group * channels_per_offset_group;
-
     auto input_tensor_chipped = input_tensor.chip(current_batch, 0);
 
     for (auto selected_offset_channel = (offset_channel_diff / 2);
@@ -523,7 +520,6 @@ void compute_filter_grad(
     typename TTypes<Dtype, 4>::Tensor &filter_grad_tensor,
     typename TTypes<Dtype, 4>::Tensor &column_buffer_tensor,
     DeformableConv2DParams &p) {
-  const auto use_mask = mask_tensor.dimension(0) > 0;
   const auto batches = p.input_batches / p.parallel_imgs;
 
   auto filter_grad_tensor_reshaped = filter_grad_tensor.reshape(
@@ -945,24 +941,6 @@ class DeformableConv2DGradOp : public OpKernel {
 
 TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_CPU);
 #undef REGISTER_DEFORMABLECONV2D_OP_CPU
-
-// Register the GPU kernels.
-//#if GOOGLE_CUDA
-//
-//#define REGISTER_DEFORMABLECONV2D_OP_GPU(T)                   \
-//  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2D")     \
-//                              .Device(DEVICE_GPU)            \
-//                              .TypeConstraint<T>("T"),       \
-//                          DeformableConv2DOp<GPUDevice, T>)   \
-//  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2DGrad") \
-//                              .Device(DEVICE_GPU)            \
-//                              .TypeConstraint<T>("T"),       \
-//                          DeformableConv2DGradOp<GPUDevice, T>)
-//
-// TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_GPU);
-//#undef REGISTER_DEFORMABLECONV2D_OP_GPU
-//
-//#endif  // GOOGLE_CUDA
 
 }  // namespace addons
 }  // namespace tensorflow
