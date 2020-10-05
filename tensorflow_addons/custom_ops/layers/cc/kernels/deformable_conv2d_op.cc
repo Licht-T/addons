@@ -34,7 +34,7 @@ using GPUDevice = Eigen::GpuDevice;
 
 namespace functor {
 template <typename Dtype>
-Dtype bilinear_interpolate(EigenTensor<Dtype, 2> input_tensor, Dtype y,
+Dtype bilinear_interpolate(EigenTensor<Dtype, 2>& input_tensor, Dtype y,
                            Dtype x) {
   auto max_height = input_tensor.dimension(0);
   auto max_width = input_tensor.dimension(1);
@@ -82,7 +82,7 @@ Dtype bilinear_interpolate(EigenTensor<Dtype, 2> input_tensor, Dtype y,
 }
 
 template <typename Dtype>
-Dtype get_coordinate_weight(EigenTensor<Dtype, 2> input_tensor, Dtype y,
+Dtype get_coordinate_weight(EigenTensor<Dtype, 2>& input_tensor, Dtype y,
                             Dtype x, bool is_y_direction) {
   auto max_height = input_tensor.dimension(0);
   auto max_width = input_tensor.dimension(1);
@@ -173,7 +173,7 @@ void deformable_im2col(typename TTypes<Dtype, 4>::ConstTensor &_input_tensor,
     const auto group_index =
         current_input_channel / (p.input_channels / p.offset_groups);
 
-    auto input_tensor_chipped =
+    EigenTensor<Dtype, 2> input_tensor_chipped =
         input_tensor.chip(current_batch, 0).chip(current_input_channel, 0);
     EigenTensor<Dtype, 5> offset_tensor_chipped =
         offset_tensor.chip(current_batch, 0).chip(group_index, 0);
@@ -322,7 +322,7 @@ void deformable_col2im_for_offset_and_mask(
           selected_input_channel, selected_filter_row, selected_filter_col,
           current_batch, current_output_row, current_output_col);
 
-      auto img = input_tensor_chipped.chip(selected_input_channel, 0);
+      EigenTensor<Dtype, 2> img = input_tensor_chipped.chip(selected_input_channel, 0);
 
       const auto weight =
           get_coordinate_weight<Dtype>(img, y, x, is_y_direction);
