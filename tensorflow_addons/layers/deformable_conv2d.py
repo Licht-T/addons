@@ -214,15 +214,16 @@ class DeformableConv2D(tf.keras.layers.Layer):
         return tf.TensorShape([in_b, self.filters, out_h, out_w])
 
     def call(self, inputs, **kwargs):
-        offset = inputs[0]
-        mask = inputs[1] if self.use_mask else tf.zeros((0, 0, 0, 0))
+        input_tensor = inputs[0]
+        offset_tensor = inputs[1]
+        mask_tensor = inputs[2] if self.use_mask else tf.zeros((0, 0, 0, 0))
 
         return _deformable_conv2d(
-            input_tensor=tf.convert_to_tensor(inputs),
+            input_tensor=tf.convert_to_tensor(input_tensor),
             filter_tensor=tf.convert_to_tensor(self.filter_weights),
             bias_tensor=tf.convert_to_tensor(self.filter_bias),
-            offset_tensor=tf.convert_to_tensor(offset),
-            mask_tensor=tf.convert_to_tensor(mask),
+            offset_tensor=tf.convert_to_tensor(offset_tensor),
+            mask_tensor=tf.convert_to_tensor(mask_tensor),
             strides=self.strides,
             weight_groups=self.weight_groups,
             offset_groups=self.offset_groups,
