@@ -185,7 +185,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
             constraint=self.kernel_constraint, trainable=True
         )
 
-        if self.use_deformable_conv_bias:
+        if self.use_bias:
             self.filter_bias = self.add_weight(
                 name='bias', shape=(self.filters,),
                 initializer=self.bias_initializer, regularizer=self.bias_regularizer,
