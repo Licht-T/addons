@@ -80,6 +80,7 @@ def _expected(
     filter_tensor = filter_tensor.numpy()
     offset_tensor = offset_tensor.numpy()
     mask_tensor = mask_tensor.numpy()
+    bias = bias.numpy()
 
     padding = conv_utils.normalize_padding(padding)
 
