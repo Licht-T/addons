@@ -258,7 +258,7 @@ def test_gradients(data_format):
         conv_fn, [input_tensor, offset_tensor, mask_tensor]
     )
 
-    np.testing.assert_allclose(theoretical, numerical, atol=1e-3)
+    np.testing.assert_allclose(theoretical[0], numerical[0], atol=1e-3)
 #
 #
 # @pytest.mark.with_device(["cpu"])
