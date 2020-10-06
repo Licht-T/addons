@@ -939,7 +939,9 @@ class DeformableConv2DGradOp : public OpKernel {
                               .TypeConstraint<T>("T"),        \
                           DeformableConv2DGradOp<CPUDevice, T>)
 
+TF_CALL_half(REGISTER_DEFORMABLECONV2D_OP_CPU);
 TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_CPU);
+TF_CALL_double(REGISTER_DEFORMABLECONV2D_OP_CPU);
 #undef REGISTER_DEFORMABLECONV2D_OP_CPU
 
 }  // namespace addons

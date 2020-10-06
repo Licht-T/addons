@@ -93,14 +93,12 @@ class DeformableConv2D(tf.keras.layers.Layer):
             kernel_size: typing.Union[int, tuple, list] = (3, 3),
             strides: typing.Union[int, tuple, list] = (1, 1),
             padding: str = 'valid',
-            data_format: str = 'channels_last',
+            data_format: str = 'channels_first',
             dilation_rate: typing.Union[int, tuple, list] = (1, 1),
             weight_groups: int = 1,
             offset_groups: int = 1,
             use_mask: bool = False,
-            use_deformable_conv_bias: bool = False,
-            use_filter_conv_bias: bool = False,
-            use_mask_conv_bias: bool = False,
+            use_bias: bool = False,
             kernel_initializer: types.Initializer = None,
             bias_initializer: types.Initializer = None,
             kernel_regularizer: types.Regularizer = None,
@@ -120,9 +118,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
         self.weight_groups = weight_groups
         self.offset_groups = offset_groups
         self.use_mask = use_mask
-        self.use_deformable_conv_bias = use_deformable_conv_bias
-        self.use_filter_conv_bias = use_filter_conv_bias
-        self.use_mask_conv_bias = use_mask_conv_bias
+        self.use_bias = use_bias
         self.kernel_initializer = tf.keras.initializers.get(kernel_initializer)
         self.bias_initializer = tf.keras.initializers.get(bias_initializer)
         self.kernel_regularizer = tf.keras.regularizers.get(kernel_regularizer)
@@ -133,46 +129,52 @@ class DeformableConv2D(tf.keras.layers.Layer):
         if self.padding == 'causal':
             raise ValueError('Causal padding is not supported.')
 
-        if self.data_format != 'channels_last':
-            raise ValueError('`channels_first` data format is not supported.')
-
-        self.conv_offset = tf.keras.layers.Conv2D(
-            self.offset_groups * 2 * self.kernel_size[0] * self.kernel_size[1],
-            kernel_size=self.kernel_size,
-            strides=(1, 1),
-            padding=self.padding,
-            use_bias=self.use_filter_conv_bias,
-            data_format=self.data_format,
-            kernel_initializer=self.kernel_initializer,
-            bias_initializer=self.bias_initializer,
-            kernel_regularizer=self.kernel_regularizer,
-            bias_regularizer=self.bias_regularizer,
-            kernel_constraint=self.kernel_constraint,
-            bias_constraint=self.bias_constraint,
-        )
-
-        self.conv_mask = tf.keras.Sequential()
-
-        if self.use_mask:
-            self.conv_mask.add(tf.keras.layers.Conv2D(
-                self.offset_groups * self.kernel_size[0] * self.kernel_size[1],
-                kernel_size=self.kernel_size,
-                strides=(1, 1),
-                padding=self.padding,
-                use_bias=self.use_mask_conv_bias,
-                data_format=self.data_format,
-                kernel_initializer=self.kernel_initializer,
-                bias_initializer=self.bias_initializer,
-                kernel_regularizer=self.kernel_regularizer,
-                bias_regularizer=self.bias_regularizer,
-                kernel_constraint=self.kernel_constraint,
-                bias_constraint=self.bias_constraint,
-            ))
+        if self.data_format != 'channels_first':
+            raise ValueError('`channels_last` data format is not supported.')
 
         self.filter_weights = None
-        self.bias_weights = None
+        self.filter_bias = None
 
-    def build(self, input_shape):
+    def _validate_shapes(self, shapes):
+        if type(shapes) is not list:
+            raise ValueError('DeformableConv2D input should be list of Tensor.')
+        elif self.use_mask and len(shapes) != 3:
+            raise ValueError('DeformableConv2D input should be 3-length list of Tensor.')
+        elif not self.use_mask and len(shapes) != 2:
+            raise ValueError('DeformableConv2D input should be 2-length list of Tensor.')
+
+    def build(self, shapes):
+        self._validate_shapes(shapes)
+
+        input_shape = shapes[0]
+        offset_shape = shapes[1]
+        mask_shape = shapes[2] if self.use_mask else None
+
+        exp_off_c = self.offset_groups * 2 * self.kernel_size[0] * self.kernel_size[1]
+
+        off_b, off_c, off_h, off_w = offset_shape
+        in_b, in_c, in_h, in_w = input_shape
+
+        out_h = conv_utils.conv_output_length(
+            in_h, self.kernel_size[0], padding=self.padding,
+            stride=self.strides[0], dilation=self.dilation_rate[0],
+        )
+        out_w = conv_utils.conv_output_length(
+            in_w, self.kernel_size[1], padding=self.padding,
+            stride=self.strides[1], dilation=self.dilation_rate[1],
+        )
+
+        if off_b != in_b or off_c != exp_off_c or off_h != out_h or off_w != out_w:
+            raise ValueError(f'DeformableConv2D Mask shape should be [{in_b}, {exp_off_c}, {out_h}, {out_w}].')
+
+        if mask_shape is not None:
+            exp_mask_c = exp_off_c // 2
+
+            mask_b, mask_c, mask_h, mask_w = mask_shape
+
+            if mask_b != in_b or mask_c != exp_mask_c or mask_h != out_h or mask_w != out_w:
+                raise ValueError(f'DeformableConv2D Mask shape should be [{in_b}, {exp_mask_c}, {out_h}, {out_w}].')
+
         # Channel first
         shape = (self.filters, input_shape[-1] // self.weight_groups,
                  self.kernel_size[0], self.kernel_size[1])
@@ -184,45 +186,41 @@ class DeformableConv2D(tf.keras.layers.Layer):
         )
 
         if self.use_deformable_conv_bias:
-            self.bias_weights = self.add_weight(
+            self.filter_bias = self.add_weight(
                 name='bias', shape=(self.filters,),
                 initializer=self.bias_initializer, regularizer=self.bias_regularizer,
                 constraint=self.bias_constraint, trainable=True
             )
         else:
-            self.bias_weights = tf.zeros((0,))
+            self.filter_bias = tf.zeros((0,))
 
         self.built = True
 
-    def compute_output_shape(self, input_shape):
-        input_shape = tf.TensorShape(input_shape).as_list()
+    def compute_output_shape(self, shapes):
+        self._validate_shapes(shapes)
 
-        space = input_shape[1:-1]
-        new_space = []
+        input_shape = shapes[0]
+        in_b, _, in_h, in_w = input_shape
 
-        for i, s in enumerate(space):
-            new_dim = conv_utils.conv_output_length(
-                s, self.kernel_size[i], padding=self.padding,
-                stride=self.strides[i], dilation=self.dilation_rate[i],
-            )
-            new_space.append(new_dim)
+        out_h = conv_utils.conv_output_length(
+            in_h, self.kernel_size[0], padding=self.padding,
+            stride=self.strides[0], dilation=self.dilation_rate[0],
+        )
+        out_w = conv_utils.conv_output_length(
+            in_w, self.kernel_size[1], padding=self.padding,
+            stride=self.strides[1], dilation=self.dilation_rate[1],
+        )
 
-        return tf.TensorShape([input_shape[0]] + new_space + [self.filters])
+        return tf.TensorShape([in_b, self.filters, out_h, out_w])
 
     def call(self, inputs, **kwargs):
-        mask_inputs = inputs if self.use_mask else tf.zeros((0, 0, 0, 0))
+        offset = inputs[0]
+        mask = inputs[1] if self.use_mask else tf.zeros((0, 0, 0, 0))
 
-        offset = self.conv_offset(inputs)
-        mask = tf.keras.activations.sigmoid(self.conv_mask(mask_inputs))
-
-        inputs = tf.transpose(inputs, [0, 3, 1, 2])
-        offset = tf.transpose(offset, [0, 3, 1, 2])
-        mask = tf.transpose(mask, [0, 3, 1, 2])
-
-        res = _deformable_conv2d(
+        return _deformable_conv2d(
             input_tensor=tf.convert_to_tensor(inputs),
             filter_tensor=tf.convert_to_tensor(self.filter_weights),
-            bias_tensor=tf.convert_to_tensor(self.bias_weights),
+            bias_tensor=tf.convert_to_tensor(self.filter_bias),
             offset_tensor=tf.convert_to_tensor(offset),
             mask_tensor=tf.convert_to_tensor(mask),
             strides=self.strides,
@@ -231,8 +229,6 @@ class DeformableConv2D(tf.keras.layers.Layer):
             padding='SAME' if self.padding == 'same' else 'VALID',
             dilations=self.dilation_rate,
         )
-
-        return tf.transpose(res, [0, 2, 3, 1])
 
     def get_config(self):
         config = {
@@ -245,9 +241,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
             "weight_groups": self.weight_groups,
             "offset_groups": self.offset_groups,
             "use_mask": self.use_mask,
-            "use_deformable_conv_bias": self.use_deformable_conv_bias,
-            "use_filter_conv_bias": self.use_filter_conv_bias,
-            "use_mask_conv_bias": self.use_mask_conv_bias,
+            "use_bias": self.use_bias,
         }
         base_config = super().get_config()
         return {**base_config, **config}
