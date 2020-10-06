@@ -21,12 +21,12 @@ from tensorflow.python.keras.utils import conv_utils
 from tensorflow_addons.layers.deformable_conv2d import DeformableConv2D
 
 
-def _get_padding_length(padding, filter_size):
+def _get_padding_length(padding, filter_size, dilation_rate, stride, input_size, output_size):
+    effective_filter_size = (filter_size - 1) * dilation_rate + 1
+
     pad = 0
     if padding == 'same':
-        pad = filter_size // 2
-    elif padding == 'full':
-        pad = filter_size - 1
+        pad = ((output_size - 1) * stride + effective_filter_size - input_size) // 2
 
     return pad
 
@@ -100,8 +100,8 @@ def _expected(
         stride=stride_cols, dilation=dilation_cols,
     )
 
-    padding_rows = _get_padding_length(padding, filter_rows)
-    padding_cols = _get_padding_length(padding, filter_cols)
+    padding_rows = _get_padding_length(padding, filter_rows, dilation_rows, stride_rows, input_rows, output_rows)
+    padding_cols = _get_padding_length(padding, filter_cols, dilation_cols, stride_cols, input_cols, output_cols)
 
     input_channels_per_offset_group = input_channels // offset_groups
 
