@@ -37,8 +37,8 @@ def _bilinear_interpolate(img, y, x):
     if y <= -1 or max_height <= y or x <= -1 or max_width <= x:
         return 0.0
 
-    y_low = np.floor(y)
-    x_low = np.floor(x)
+    y_low = int(np.floor(y))
+    x_low = int(np.floor(x))
     y_high = y_low + 1
     w_high = x_low + 1
 
@@ -76,10 +76,10 @@ def _expected(
         mask_tensor, bias, strides, weight_groups,
         offset_groups, padding, dilation_rate
 ):
-    input_tensor = np.array(input_tensor, dtype=np.float32)
-    filter_tensor = np.array(filter_tensor, dtype=np.float32)
-    offset_tensor = np.array(offset_tensor, dtype=np.float32)
-    mask_tensor = np.array(mask_tensor, dtype=np.float32)
+    input_tensor = input_tensor.numpy()
+    filter_tensor = filter_tensor.numpy()
+    offset_tensor = offset_tensor.numpy()
+    mask_tensor = mask_tensor.numpy()
 
     padding = conv_utils.normalize_padding(padding)
 
@@ -107,7 +107,7 @@ def _expected(
     input_channels_per_weight_groups = filter_tensor.shape[1]
     output_channels_per_weight_groups = output_channels // weight_groups
 
-    offset_tensor.reshape((batches, -1, 2, output_rows, output_cols))
+    offset_tensor = offset_tensor.reshape((batches, -1, 2, output_rows, output_cols))
 
     output = np.zeros((batches, output_channels, output_rows, output_cols))
 
@@ -181,7 +181,7 @@ def test_forward_simple(data_format):
         filters=filters,
         kernel_size=kernel_size,
         strides=strides,
-        pading=padding,
+        padding=padding,
         dilation_rate=dilation_rate,
         weight_groups=weight_groups,
         offset_groups=offset_groups,
@@ -189,10 +189,11 @@ def test_forward_simple(data_format):
         use_bias=True
     )
 
+    actual = conv([input_tensor, offset_tensor, mask_tensor])
+
     filter_tensor = conv.filter_weights
     bias = conv.filter_bias
 
-    actual = conv([input_tensor, offset_tensor, mask_tensor])
     expected = _expected(
         input_tensor, filter_tensor, offset_tensor,
         mask_tensor, bias, strides, weight_groups,
