@@ -137,6 +137,7 @@ def _expected(
                                 output[batch, output_channel, output_row, output_col] \
                                     += (mask * filter_tensor[output_channel, input_channel, filter_row, filter_col] *
                                                         _bilinear_interpolate(input_tensor[batch, c_in, :, :], y, x))
+
     output += bias.reshape((1, output_channels, 1, 1))
     return output
 
@@ -203,41 +204,61 @@ def test_forward_simple(data_format):
 
     np.testing.assert_allclose(actual.numpy(), expected)
 
-#
-# @pytest.mark.with_device(["cpu"])
-# def test_gradients(data_format):
-#     batch, channels, height, width = 2, 3, 5, 6
-#     input_a = np.random.randn(batch, channels, height, width).astype(np.float32)
-#     input_b = np.random.randn(batch, channels, height, width).astype(np.float32)
-#
-#     kernel_size = 1
-#     max_displacement = 2
-#     stride_1 = 1
-#     stride_2 = 2
-#     pad = 4
-#
-#     if data_format == "channels_last":
-#         input_a = tf.transpose(input_a, [0, 2, 3, 1])
-#         input_b = tf.transpose(input_b, [0, 2, 3, 1])
-#
-#     input_a_op = tf.convert_to_tensor(input_a)
-#     input_b_op = tf.convert_to_tensor(input_b)
-#
-#     def correlation_fn(input_a, input_b):
-#         return CorrelationCost(
-#             kernel_size=kernel_size,
-#             max_displacement=max_displacement,
-#             stride_1=stride_1,
-#             stride_2=stride_2,
-#             pad=pad,
-#             data_format=data_format,
-#         )([input_a, input_b])
-#
-#     theoretical, numerical = tf.test.compute_gradient(
-#         correlation_fn, [input_a_op, input_b_op]
-#     )
-#
-#     np.testing.assert_allclose(theoretical[0], numerical[0], atol=1e-3)
+
+@pytest.mark.with_device(["cpu"])
+def test_gradients(data_format):
+    if data_format == 'channels_last':
+        return
+
+    batches = 1
+    input_channels = 6
+    filters = 2
+    weight_groups = 2
+    offset_groups = 3
+
+    strides = (2, 1)
+    padding = 'same'
+    dilation_rate = (2, 1)
+    kernel_size = (3, 2)
+
+    input_rows, input_cols = 5, 4
+    filter_rows, filter_cols = kernel_size
+    stride_rows, stride_cols = strides
+    dilation_rows, dilation_cols = dilation_rate
+
+    output_rows = conv_utils.conv_output_length(
+        input_rows, filter_rows, padding=padding,
+        stride=stride_rows, dilation=dilation_rows,
+    )
+    output_cols = conv_utils.conv_output_length(
+        input_cols, filter_cols, padding=padding,
+        stride=stride_cols, dilation=dilation_cols,
+    )
+
+    offsets = offset_groups * filter_rows * filter_cols
+
+    input_tensor = tf.random.uniform([batches, input_channels, input_rows, input_cols])
+    offset_tensor = tf.random.uniform([batches, 2 * offsets, output_rows, output_cols])
+    mask_tensor = tf.random.uniform([batches, offsets, output_rows, output_cols])
+
+    def conv_fn(input_tensor, offset_tensor, mask_tensor):
+        return DeformableConv2D(
+            filters=filters,
+            kernel_size=kernel_size,
+            strides=strides,
+            padding=padding,
+            dilation_rate=dilation_rate,
+            weight_groups=weight_groups,
+            offset_groups=offset_groups,
+            use_mask=True,
+            use_bias=True
+        )([input_tensor, offset_tensor, mask_tensor])
+
+    theoretical, numerical = tf.test.compute_gradient(
+        conv_fn, [input_tensor, offset_tensor, mask_tensor]
+    )
+
+    np.testing.assert_allclose(theoretical, numerical, atol=1e-3)
 #
 #
 # @pytest.mark.with_device(["cpu"])
