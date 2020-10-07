@@ -218,8 +218,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
             column_buffer_tensor.chip(g, 0).shuffle(Shape2D({1, 0}));
 
         EigenTensor<Dtype, 2> output_grad_mtx =
-            output_grad_tensor_batch.chip(g, 0).reshape(
-                Shape2D({rows, cols}));
+            output_grad_tensor_batch.chip(g, 0).reshape(Shape2D({rows, cols}));
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
             Eigen::IndexPair<int>(1, 0)};
@@ -227,8 +226,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         EigenTensor<Dtype, 2> mul =
             output_grad_mtx.contract(column_buffer_mtx, product_dims);
 
-        filter_grad_tensor.chip(g, 0).reshape(
-            Shape2D({rows, elems})) += mul;
+        filter_grad_tensor.chip(g, 0).reshape(Shape2D({rows, elems})) += mul;
       }
     }
   }
@@ -262,8 +260,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
       // FIXME: Check if correct
       _column_buffer_tensor.setZero();
 
-      auto output_grad_tensor_chipped =
-          output_grad_tensor.chip(b, 0);
+      auto output_grad_tensor_chipped = output_grad_tensor.chip(b, 0);
       for (int g = 0; g < p.weight_groups; g++) {
         EigenTensor<Dtype, 2> filter_mtx = filter_tensor.chip(g, 0)
                                                .reshape(Shape2D({elems, rows}))
@@ -645,32 +642,29 @@ class DeformableConv2DOpBase : public OpKernel {
     return 1;
   }
 
+ protected:
+  TensorFormat data_format;
+  DeformableConv2DParams p;
  private:
   std::vector<int32> strides;
   int32 weight_groups;
   int32 offset_groups;
   Padding padding;
   std::vector<int32> dilations;
-  TensorFormat data_format;
-  DeformableConv2DParams p;
 };
 
 template <typename Device, typename T>
-class DeformableConv2DOp : public OpKernel {
+class DeformableConv2DOp : public DeformableConv2DOpBase<Device, T> {
+  using DeformableConv2DOpBase<Device, T>::data_format;
+  using DeformableConv2DOpBase<Device, T>::p;
+
  public:
   explicit DeformableConv2DOp(OpKernelConstruction *context)
-      : OpKernel(context) {
-    OP_REQUIRES_OK(context, context->GetAttr("strides", &strides));
-    OP_REQUIRES_OK(context, context->GetAttr("weight_groups", &weight_groups));
-    OP_REQUIRES_OK(context, context->GetAttr("offset_groups", &offset_groups));
-    OP_REQUIRES_OK(context, context->GetAttr("padding", &padding));
-    OP_REQUIRES_OK(context, context->GetAttr("dilations", &dilations));
-    string data_format_str;
-    OP_REQUIRES_OK(context, context->GetAttr("data_format", &data_format_str));
-    FormatFromString(data_format_str, &data_format);
-  }
+      : DeformableConv2DOpBase<Device, T>(context) {}
 
   void Compute(OpKernelContext *context) override {
+    this->Compute(context);
+
     const Tensor &input_tensor = context->input(0);
     const Tensor &filter_tensor = context->input(1);
     const Tensor &bias_tensor = context->input(2);
@@ -679,69 +673,24 @@ class DeformableConv2DOp : public OpKernel {
 
     const TensorShape &input_shape = input_tensor.shape();
     const TensorShape &filter_shape = filter_tensor.shape();
+    const TensorShape &bias_shape = bias_tensor.shape();
+    const TensorShape &offset_shape = offset_tensor.shape();
+    const TensorShape &mask_shape = mask_tensor.shape();
 
-    auto input_batches = input_shape.dim_size(0);
-    auto input_channels = input_shape.dim_size(1);
-    auto input_rows = input_shape.dim_size(2);
-    auto input_cols = input_shape.dim_size(3);
-
-    auto output_channels = filter_shape.dim_size(0);
-    auto filter_channels = filter_shape.dim_size(1);
-    auto filter_rows = filter_shape.dim_size(2);
-    auto filter_cols = filter_shape.dim_size(3);
-
-    auto dilation_rows = dilations[0];
-    auto dilation_cols = dilations[1];
-
-    auto stride_rows = strides[0];
-    auto stride_cols = strides[1];
-
-    auto parallel_imgs = get_parallel_imgs(input_batches);
-
-    int64 output_rows, output_cols;
-    int64 padding_rows, padding_cols;
-    OP_REQUIRES_OK(
-        context, GetWindowedOutputSizeV2(input_rows, filter_rows, dilation_rows,
-                                         stride_rows, padding, &output_rows,
-                                         &padding_rows));
-    OP_REQUIRES_OK(
-        context, GetWindowedOutputSizeV2(input_cols, filter_cols, dilation_cols,
-                                         stride_cols, padding, &output_cols,
-                                         &padding_cols));
-
-    TensorShape column_buffer_shape({input_channels * filter_rows * filter_cols,
-                                     parallel_imgs, output_rows, output_cols});
+    TensorShape column_buffer_shape(
+        {p.input_channels * p.filter_rows * p.filter_cols, p.parallel_imgs,
+         p.output_rows, p.output_cols});
     Tensor column_buffer_tensor;
     OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<T>::value,
                                                    column_buffer_shape,
                                                    &column_buffer_tensor));
 
-    TensorShape output_shape = ShapeFromFormat(
-        data_format, input_batches, output_rows, output_cols, output_channels);
+    TensorShape output_shape =
+        ShapeFromFormat(data_format, p.input_batches, p.output_rows,
+                        p.output_cols, p.output_channels);
     Tensor *output_tensor = nullptr;
     OP_REQUIRES_OK(context,
                    context->allocate_output(0, output_shape, &output_tensor));
-
-    DeformableConv2DParams p{};
-    p.input_batches = input_batches;
-    p.input_channels = input_channels;
-    p.input_rows = input_rows;
-    p.input_cols = input_cols;
-    p.filter_channels = filter_channels;
-    p.filter_rows = filter_rows;
-    p.filter_cols = filter_cols;
-    p.padding_rows = padding_rows;
-    p.padding_cols = padding_cols;
-    p.stride_rows = stride_rows;
-    p.stride_cols = stride_cols;
-    p.dilation_rows = dilation_rows;
-    p.dilation_cols = dilation_cols;
-    p.output_channels = output_channels;
-    p.output_rows = output_rows;
-    p.output_cols = output_cols;
-    p.parallel_imgs = parallel_imgs;
-    p.weight_groups = weight_groups;
-    p.offset_groups = offset_groups;
 
     functor::DeformableConv2DFunctor<Device, T> deformableConv2DFunc(
         input_tensor.tensor<T, 4>(), filter_tensor.tensor<T, 4>(),
@@ -752,14 +701,6 @@ class DeformableConv2DOp : public OpKernel {
 
     OP_REQUIRES_OK(context, s);
   }
-
- private:
-  std::vector<int32> strides;
-  int32 weight_groups;
-  int32 offset_groups;
-  Padding padding;
-  std::vector<int32> dilations;
-  TensorFormat data_format;
 };
 
 template <typename Device, typename T>
