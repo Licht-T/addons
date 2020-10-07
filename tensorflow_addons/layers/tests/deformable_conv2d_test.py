@@ -327,4 +327,4 @@ def test_keras(data_format):
     actual_output = model([input_tensor, offset_tensor, mask_tensor])
 
     assert tf.keras.backend.dtype(y[0]) == 'float32'
-    assert actual_output.shape[1:] == expected_output_shape[0][1:]
+    assert actual_output.shape[1:] == expected_output_shape[1:]
