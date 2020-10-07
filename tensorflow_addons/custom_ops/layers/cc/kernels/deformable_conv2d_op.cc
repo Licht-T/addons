@@ -237,7 +237,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   void ComputeInputOffsetMaskGrad() {
     auto batches = p.input_batches / p.parallel_imgs;
 
-    EigenTensorRef<Dtype, 5> filter_tensor_reshaped = _filter_tensor.reshape(
+    EigenTensor<Dtype, 5> filter_tensor_reshaped = _filter_tensor.reshape(
         Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
                  p.filter_channels, p.filter_rows, p.filter_cols}));
 
@@ -295,7 +295,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                        p.filter_cols * p.offset_groups * p.parallel_imgs;
     auto offset_channels = 2 * p.filter_rows * p.filter_cols * p.offset_groups;
 
-    EigenTensorRef<Dtype, 4> input_tensor =
+    EigenTensor<Dtype, 4> input_tensor =
         _input_tensor
             .reshape(Shape5D({batches, p.parallel_imgs, p.input_channels,
                               p.input_rows, p.input_cols}))
@@ -304,9 +304,9 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     Shape8D offset_new_shape({batches, p.parallel_imgs, p.offset_groups,
                               p.filter_rows, p.filter_cols, 2, p.output_rows,
                               p.output_cols});
-    EigenTensorRef<Dtype, 7> offset_tensor =
+    EigenTensor<Dtype, 7> offset_tensor =
         _offset_tensor.reshape(offset_new_shape).chip(b, 0);
-    EigenTensorRef<Dtype, 1> offset_grad_tensor =
+    EigenTensor<Dtype, 1> offset_grad_tensor =
         _offset_grad_tensor.reshape(offset_new_shape)
             .chip(b, 0)
             .reshape(Shape1D({num_kernels}));
@@ -316,16 +316,16 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                             p.output_cols});
     Shape6D mask_zero_6d_shape({0, 0, 0, 0, 0, 0});
 
-    EigenTensorRef<Dtype, 6> mask_tensor =
-        use_mask ? static_cast<EigenTensorRef<Dtype, 6>>(
+    EigenTensor<Dtype, 6> mask_tensor =
+        use_mask ? static_cast<EigenTensor<Dtype, 6>>(
                        _mask_tensor.reshape(mask_new_shape).chip(b, 0))
                  : _mask_tensor.reshape(mask_zero_6d_shape);
-    EigenTensorRef<Dtype, 6> mask_grad_tensor =
-        use_mask ? static_cast<EigenTensorRef<Dtype, 6>>(
+    EigenTensor<Dtype, 6> mask_grad_tensor =
+        use_mask ? static_cast<EigenTensor<Dtype, 6>>(
                        _mask_grad_tensor.reshape(mask_new_shape).chip(b, 0))
                  : _mask_grad_tensor.reshape(mask_zero_6d_shape);
 
-    EigenTensorRef<Dtype, 6> column_buffer_tensor =
+    EigenTensor<Dtype, 6> column_buffer_tensor =
         _column_buffer_tensor.reshape(
             Shape6D({p.input_channels, p.filter_rows, p.filter_cols,
                      p.parallel_imgs, p.output_rows, p.output_cols}));
@@ -427,15 +427,15 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
                        p.output_rows * p.output_cols * p.parallel_imgs;
 
-    EigenTensorRef<Dtype, 7> offset_tensor =
+    EigenTensor<Dtype, 7> offset_tensor =
         _offset_tensor
             .reshape(Shape8D({batches, p.parallel_imgs, p.offset_groups,
                               p.filter_rows, p.filter_cols, 2, p.output_rows,
                               p.output_cols}))
             .chip(b, 0);
 
-    EigenTensorRef<Dtype, 6> mask_tensor =
-        use_mask ? static_cast<EigenTensorRef<Dtype, 6>>(
+    EigenTensor<Dtype, 6> mask_tensor =
+        use_mask ? static_cast<EigenTensor<Dtype, 6>>(
                        _mask_tensor
                            .reshape(Shape7D({batches, p.parallel_imgs,
                                              p.offset_groups, p.filter_rows,
@@ -444,7 +444,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                            .chip(b, 0))
                  : _mask_tensor.reshape(Shape6D({0, 0, 0, 0, 0, 0}));
 
-    EigenTensorRef<Dtype, 1> column_buffer_tensor_flattened =
+    EigenTensor<Dtype, 1> column_buffer_tensor_flattened =
         _column_buffer_tensor.reshape(Shape1D({num_kernels}));
 
     for (auto k = 0; k < num_kernels; k++) {
@@ -507,7 +507,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
 
   Dtype GetCoordinateWeight(int32 batch, int32 channel, Dtype y, Dtype x,
                             bool is_y_direction) {
-    EigenTensorRef<Dtype, 2> img =
+    EigenTensor<Dtype, 2> img =
         _input_tensor.chip(batch, 0).chip(channel, 0);
 
     auto max_height = img.dimension(0);

@@ -84,7 +84,7 @@ struct DeformableConv2DFunctorBase {
 
   Dtype BilinearInterpolate(int32 batch, int32 channel,
                             Dtype y, Dtype x) {
-    EigenTensorRef<Dtype, 2> img =
+    EigenTensor<Dtype, 2> img =
         _input_tensor.chip(batch, 0).chip(channel, 0);
 
     auto max_height = img.dimension(0);
@@ -138,15 +138,15 @@ struct DeformableConv2DFunctorBase {
         p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;
     auto batches = p.input_batches / p.parallel_imgs;
 
-    EigenTensorRef<Dtype, 7> offset_tensor =
+    EigenTensor<Dtype, 7> offset_tensor =
         _offset_tensor
             .reshape(Shape8D({batches, p.parallel_imgs, p.offset_groups,
                               p.filter_rows, p.filter_cols, 2, p.output_rows,
                               p.output_cols}))
             .chip(b, 0);
 
-    EigenTensorRef<Dtype, 6> mask_tensor =
-        use_mask ? static_cast<EigenTensorRef<Dtype, 6>>(
+    EigenTensor<Dtype, 6> mask_tensor =
+        use_mask ? static_cast<EigenTensor<Dtype, 6>>(
                        _mask_tensor
                            .reshape(Shape7D({batches, p.parallel_imgs,
                                              p.offset_groups, p.filter_rows,
@@ -170,12 +170,12 @@ struct DeformableConv2DFunctorBase {
       const auto group_index =
           current_input_channel / (p.input_channels / p.offset_groups);
 
-      EigenTensorRef<Dtype, 5> offset_tensor_chipped =
+      EigenTensor<Dtype, 5> offset_tensor_chipped =
           offset_tensor.chip(current_batch, 0).chip(group_index, 0);
 
-      EigenTensorRef<Dtype, 4> mask_tensor_chipped =
+      EigenTensor<Dtype, 4> mask_tensor_chipped =
           use_mask
-              ? static_cast<EigenTensorRef<Dtype, 4>>(
+              ? static_cast<EigenTensor<Dtype, 4>>(
                     mask_tensor.chip(current_batch, 0).chip(group_index, 0))
               : mask_tensor.reshape(Shape4D({0, 0, 0, 0}));
 
