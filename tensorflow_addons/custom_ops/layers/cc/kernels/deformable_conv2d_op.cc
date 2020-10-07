@@ -257,7 +257,6 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         _column_buffer_tensor.reshape(Shape3D({p.weight_groups, rows, cols}));
 
     for (auto b = 0; b < batches; b++) {
-      // FIXME: Check if correct
       _column_buffer_tensor.setZero();
 
       auto output_grad_tensor_chipped = output_grad_tensor.chip(b, 0);
@@ -536,10 +535,10 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
 
     if (is_y_direction) {
       auto dx = x - x_low;
-      return dx * (v_YX - v_yX) + (1 - dx) * (v_Yx - v_yx);
+      return (v_YX - v_yX) * dx + (v_Yx - v_yx) * (1 - dx);
     } else {
       auto dy = y - y_low;
-      return dy * (v_YX - v_Yx) + (1 - dy) * (v_yX - v_yx);
+      return (v_YX - v_Yx) * dy + (v_yX - v_yx) * (1 - dy);
     }
   }
 

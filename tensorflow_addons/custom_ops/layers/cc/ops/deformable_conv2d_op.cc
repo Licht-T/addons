@@ -37,7 +37,7 @@ REGISTER_OP("Addons>DeformableConv2D")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int)")
     .Attr("data_format: { 'NCHW' }")
-    .Attr("T: {half, bfloat16, float, double}")
+    .Attr("T: {float, double}")
     .SetShapeFn([](InferenceContext *c) {
       ShapeHandle input_shape;
       ShapeHandle filter_shape;
@@ -65,7 +65,7 @@ REGISTER_OP("Addons>DeformableConv2D")
       TF_RETURN_IF_ERROR(c->GetAttr("data_format", &data_format_str));
       FormatFromString(data_format_str, &data_format);
       if (strides.size() != 2 || dilations.size() != 2) {
-        return errors::InvalidArgument("TODO");
+        return errors::InvalidArgument("strides/dilations size must be 2.");
       }
 
       DimensionHandle input_batches_dim = c->Dim(input_shape, 0);
@@ -148,18 +148,18 @@ REGISTER_OP("Addons>DeformableConv2D")
         return Status::OK();
       }
 
-      auto filter_rows_eff =
+      auto effective_filter_rows =
           filter_rows + (filter_rows - 1) * (diration_rows - 1);
-      auto filter_cols_eff =
+      auto effective_filter_cols =
           filter_cols + (filter_cols - 1) * (diration_cols - 1);
 
       int64 output_rows, output_cols;
       int64 padding_before, padding_after;
       TF_RETURN_IF_ERROR(GetWindowedOutputSizeVerbose(
-          input_rows, filter_rows_eff, stride_rows, padding, &output_rows,
+          input_rows, effective_filter_rows, stride_rows, padding, &output_rows,
           &padding_before, &padding_after));
       TF_RETURN_IF_ERROR(GetWindowedOutputSizeVerbose(
-          input_cols, filter_cols_eff, stride_cols, padding, &output_cols,
+          input_cols, effective_filter_cols, stride_cols, padding, &output_cols,
           &padding_before, &padding_after));
 
       TF_RETURN_IF_ERROR(c->WithValue(offset_heights_dim, output_rows, &tmp));
@@ -174,7 +174,46 @@ REGISTER_OP("Addons>DeformableConv2D")
 
       return Status::OK();
     })
-    .Doc(R"doc(TODO)doc");
+    .Doc(R"doc(
+Compute Modulated Deformable Convolution.
+
+This layer implements the operation from
+Deformable ConvNets v2: More Deformable, Better Results (Zhu et al.)
+
+input: A `Tensor` of the format specified by `data_format`.
+filter: A `Tensor` of the convolution kernel weights. Its shape is
+    `(output_channel, input_channel // weight_groups, kernel_height, kernel_width)`.
+bias: A `Tensor` of the convolution bias.
+    `(0,)`-shape `Tensor` is passed when bias is disabled on Python side.
+offset: A `Tensor` of the offsets which are applied for each position
+    in the convolution kernel. The channel size must be
+    `2 * kernel_height * kernel_width * offset_groups`.
+mask: A `Tensor` of the modulation which are applied for each position
+    in the convolution kernel. The channel size must be
+    `kernel_height * kernel_width * offset_groups` if the modulation mode is
+    enabled on Python side. `(0,)`-shape `Tensor` is passed when the modulation
+    mode is disabled on Python side.
+stride: A list of 2 integers, specifying the strides of the convolution
+    along the height and width.
+weight_groups: An integer specifying the number of groups in which the input is
+    split along the channel axis. Each group is convolved separately with
+    `filters / weight_groups` filters. The output is the concatenation of all
+    the groups results along the channel axis. Input channels and output
+    channels must both be divisible by groups.
+offset_groups: An integer specifying the number of groups in which the input is
+    split along the channel axis. Each group is convolved separately with
+    its group offset.
+padding: A string specifying the padding type.
+    Possible values are:
+    "VALID"
+    "SAME"
+dilations: A list of 2 integers, specifying the dilation rate to use
+    for dilated convolution.
+data_format: Specifies the data format.
+    Possible values is:
+    "NCHW" float [batch, channels, height, width]
+    Defaults to `"NCHW"`.
+)doc");
 
 REGISTER_OP("Addons>DeformableConv2DGrad")
     .Input("input: T")
@@ -194,7 +233,7 @@ REGISTER_OP("Addons>DeformableConv2DGrad")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int)")
     .Attr("data_format: { 'NCHW' }")
-    .Attr("T: {half, bfloat16, float, double}")
+    .Attr("T: {float, double}")
     .SetShapeFn([](InferenceContext *c) {
       c->set_output(0, c->input(0));
       c->set_output(1, c->input(1));
@@ -203,7 +242,7 @@ REGISTER_OP("Addons>DeformableConv2DGrad")
       c->set_output(4, c->input(4));
       return Status::OK();
     })
-    .Doc(R"doc(TODO)doc");
+    .Doc(R"doc(DeformableConv2DGrad op.)doc");
 
 }  // namespace addons
 }  // namespace tensorflow

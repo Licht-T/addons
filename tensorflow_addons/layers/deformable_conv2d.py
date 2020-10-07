@@ -53,19 +53,19 @@ def _deformable_conv2d(
         )
 
 
-@tf.RegisterGradient("Addons>DeformableConv2D")
+@tf.RegisterGradient('Addons>DeformableConv2D')
 def _deformable_conv2d_grad(op, grad):
     input = op.inputs[0]
     filter = op.inputs[1]
     bias = op.inputs[2]
     offset = op.inputs[3]
     mask = op.inputs[4]
-    strides = op.get_attr("strides")
+    strides = op.get_attr('strides')
     weight_groups = op.get_attr('weight_groups')
     offset_groups = op.get_attr('offset_groups')
-    padding = op.get_attr("padding")
-    dilations = op.get_attr("dilations")
-    data_format = op.get_attr("data_format")
+    padding = op.get_attr('padding')
+    dilations = op.get_attr('dilations')
+    data_format = op.get_attr('data_format')
 
     data_grad = _deformable_conv2d_ops_so.ops.addons_deformable_conv2d_grad(
         input,
@@ -84,7 +84,7 @@ def _deformable_conv2d_grad(op, grad):
     return data_grad
 
 
-@tf.keras.utils.register_keras_serializable(package="Addons")
+@tf.keras.utils.register_keras_serializable(package='Addons')
 class DeformableConv2D(tf.keras.layers.Layer):
     @typechecked
     def __init__(
@@ -107,6 +107,54 @@ class DeformableConv2D(tf.keras.layers.Layer):
             bias_constraint: types.Constraint = None,
             **kwargs
     ):
+        """Modulated Deformable Convolution Layer.
+
+        This layer implements from [Deformable ConvNets v2: More Deformable, Better Results]
+        (https://arxiv.org/abs/1811.11168)(Zhu et al.).
+
+        Arguments:
+          filters: Integer, the dimensionality of the output space (i.e. the number of
+            output filters in the convolution).
+          kernel_size: An integer or tuple/list of 2 integers, specifying the height
+            and width of the 2D convolution window. Can be a single integer to specify
+            the same value for all spatial dimensions.
+          strides: An integer or tuple/list of 2 integers, specifying the strides of
+            the convolution along the height and width. Can be a single integer to
+            specify the same value for all spatial dimensions. Specifying any stride
+            value != 1 is incompatible with specifying any `dilation_rate` value != 1.
+          padding: one of `"valid"` or `"same"` (case-insensitive).
+          data_format: Specifies the data format.
+            Possible values is:
+                "channels_first" float [batch, channels, height, width]
+                Defaults to `"channels_first"`.
+          dilation_rate: an integer or tuple/list of 2 integers, specifying the
+            dilation rate to use for dilated convolution. Can be a single integer to
+            specify the same value for all spatial dimensions.
+          weight_groups: A positive integer specifying the number of groups in which the
+            input is split along the channel axis. Each group is convolved separately
+            with `filters / weight_groups` filters. The output is the concatenation of all
+            the `weight_groups` results along the channel axis. Input channels and `filters`
+            must both be divisible by `groups`.
+          offset_groups: An integer specifying the number of groups in which the input is
+            split along the channel axis. Each group is convolved separately with
+            its group offset.
+          use_mask: Boolean, whether the layer uses a modulation input.
+          use_bias: Boolean, whether the layer uses a bias vector.
+          kernel_initializer: Initializer for the `kernel` weights matrix (see
+            `keras.initializers`).
+          bias_initializer: Initializer for the bias vector (see
+            `keras.initializers`).
+          kernel_regularizer: Regularizer function applied to the `kernel` weights
+            matrix (see `keras.regularizers`).
+          bias_regularizer: Regularizer function applied to the bias vector (see
+            `keras.regularizers`).
+          activity_regularizer: Regularizer function applied to the output of the
+            layer (its "activation") (see `keras.regularizers`).
+          kernel_constraint: Constraint function applied to the kernel matrix (see
+            `keras.constraints`).
+          bias_constraint: Constraint function applied to the bias vector (see
+            `keras.constraints`).
+        """
         super(DeformableConv2D, self).__init__(**kwargs)
 
         self.filters = filters
@@ -132,16 +180,19 @@ class DeformableConv2D(tf.keras.layers.Layer):
         if self.data_format != 'channels_first':
             raise ValueError('`channels_last` data format is not supported.')
 
+        if self.filters % self.weight_groups != 0:
+            raise ValueError('filters must be divisible by weight_group.')
+
         self.filter_weights = None
         self.filter_bias = None
 
     def _validate_shapes(self, shapes):
         if type(shapes) is not list:
-            raise ValueError('DeformableConv2D input should be list of Tensor.')
+            raise ValueError('DeformableConv2D input must be list of Tensor.')
         elif self.use_mask and len(shapes) != 3:
-            raise ValueError('DeformableConv2D input should be 3-length list of Tensor.')
+            raise ValueError('DeformableConv2D input must be 3-length list of Tensor.')
         elif not self.use_mask and len(shapes) != 2:
-            raise ValueError('DeformableConv2D input should be 2-length list of Tensor.')
+            raise ValueError('DeformableConv2D input must be 2-length list of Tensor.')
 
     def build(self, shapes):
         self._validate_shapes(shapes)
@@ -165,7 +216,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
         )
 
         if off_b != in_b or off_c != exp_off_c or off_h != out_h or off_w != out_w:
-            raise ValueError(f'DeformableConv2D Mask shape should be [{in_b}, {exp_off_c}, {out_h}, {out_w}].')
+            raise ValueError(f'DeformableConv2D Offset shape must be [{in_b}, {exp_off_c}, {out_h}, {out_w}].')
 
         if mask_shape is not None:
             exp_mask_c = exp_off_c // 2
@@ -173,7 +224,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
             mask_b, mask_c, mask_h, mask_w = mask_shape
 
             if mask_b != in_b or mask_c != exp_mask_c or mask_h != out_h or mask_w != out_w:
-                raise ValueError(f'DeformableConv2D Mask shape should be [{in_b}, {exp_mask_c}, {out_h}, {out_w}].')
+                raise ValueError(f'DeformableConv2D Mask shape must be [{in_b}, {exp_mask_c}, {out_h}, {out_w}].')
 
         # Channel first
         shape = (self.filters, input_shape[-1] // self.weight_groups,
@@ -233,16 +284,16 @@ class DeformableConv2D(tf.keras.layers.Layer):
 
     def get_config(self):
         config = {
-            "kernel_size": self.kernel_size,
-            "filters": self.filters,
-            "strides": self.strides,
-            "padding": self.padding,
-            "data_format": self.data_format,
-            "dilation_rate": self.dilation_rate,
-            "weight_groups": self.weight_groups,
-            "offset_groups": self.offset_groups,
-            "use_mask": self.use_mask,
-            "use_bias": self.use_bias,
+            'kernel_size': self.kernel_size,
+            'filters': self.filters,
+            'strides': self.strides,
+            'padding': self.padding,
+            'data_format': self.data_format,
+            'dilation_rate': self.dilation_rate,
+            'weight_groups': self.weight_groups,
+            'offset_groups': self.offset_groups,
+            'use_mask': self.use_mask,
+            'use_bias': self.use_bias,
         }
         base_config = super().get_config()
         return {**base_config, **config}

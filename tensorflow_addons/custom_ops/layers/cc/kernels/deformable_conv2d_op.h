@@ -267,16 +267,6 @@ struct DeformableConv2DGradFunctor
 };
 
 }  // namespace functor
-
-static inline int get_parallel_imgs(int n) {
-  for (auto k = kMaxParallelImgs; k > 1; --k) {
-    if (n % k == 0) {
-      return k;
-    }
-  }
-  return 1;
-}
-
 }  // namespace addons
 }  // namespace tensorflow
 

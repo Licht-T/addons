@@ -119,10 +119,10 @@ def _expected(
                     for filter_row in range(filter_rows):
                         for filter_col in range(filter_cols):
                             for input_channel in range(input_channels_per_weight_groups):
-                                weight_grp = output_channel // output_channels_per_weight_groups
-                                c_in = weight_grp * input_channels_per_weight_groups + input_channel
+                                weight_group = output_channel // output_channels_per_weight_groups
+                                input_channel = weight_group * input_channels_per_weight_groups + input_channel
 
-                                offset_group = c_in // input_channels_per_offset_group
+                                offset_group = input_channel // input_channels_per_offset_group
                                 offset_idx = (offset_group * (filter_rows * filter_cols)
                                               + filter_row * filter_cols + filter_col)
 
@@ -136,7 +136,7 @@ def _expected(
 
                                 output[batch, output_channel, output_row, output_col] \
                                     += (mask * filter_tensor[output_channel, input_channel, filter_row, filter_col] *
-                                        _bilinear_interpolate(input_tensor[batch, c_in, :, :], y, x))
+                                        _bilinear_interpolate(input_tensor[batch, input_channel, :, :], y, x))
 
     output += bias.reshape((1, output_channels, 1, 1))
     return output
@@ -263,34 +263,64 @@ def test_gradients(data_format):
     np.testing.assert_allclose(theoretical[0], numerical[0], atol=1e-3)
     np.testing.assert_allclose(theoretical[1], numerical[1], atol=1e-3)
     np.testing.assert_allclose(theoretical[2], numerical[2], atol=1e-3)
-#
-#
-# @pytest.mark.with_device(["cpu"])
-# def test_keras(data_format):
-#     # Unable to use `layer_test` as this layer has multiple inputs.
-#     val_a, val_b = _create_test_data(data_format)
-#
-#     input_a = tf.keras.Input(shape=val_a.shape[1:])
-#     input_b = tf.keras.Input(shape=val_b.shape[1:])
-#
-#     layer = CorrelationCost(
-#         kernel_size=1,
-#         max_displacement=2,
-#         stride_1=1,
-#         stride_2=2,
-#         pad=4,
-#         data_format=data_format,
-#     )
-#
-#     expected_output_shape = tuple(
-#         layer.compute_output_shape([input_a.shape, input_b.shape])
-#     )
-#
-#     x = [input_a, input_b]
-#     y = layer(x)
-#     model = tf.keras.models.Model(x, y)
-#     actual_output = model([val_a, val_b])
-#
-#     expected_output_type = "float32"
-#     assert tf.keras.backend.dtype(y[0]) == expected_output_type
-#     assert actual_output.shape[1:] == expected_output_shape[0][1:]
+
+
+@pytest.mark.with_device(["cpu"])
+def test_keras(data_format):
+    if data_format == 'channels_last':
+        return
+
+    batches = 1
+    input_channels = 6
+    filters = 2
+    weight_groups = 2
+    offset_groups = 3
+
+    strides = (2, 1)
+    padding = 'same'
+    dilation_rate = (2, 1)
+    kernel_size = (3, 2)
+
+    input_rows, input_cols = 5, 4
+    filter_rows, filter_cols = kernel_size
+    stride_rows, stride_cols = strides
+    dilation_rows, dilation_cols = dilation_rate
+
+    output_rows = conv_utils.conv_output_length(
+        input_rows, filter_rows, padding=padding,
+        stride=stride_rows, dilation=dilation_rows,
+    )
+    output_cols = conv_utils.conv_output_length(
+        input_cols, filter_cols, padding=padding,
+        stride=stride_cols, dilation=dilation_cols,
+    )
+
+    offsets = offset_groups * filter_rows * filter_cols
+
+    input_tensor = tf.random.uniform([batches, input_channels, input_rows, input_cols])
+    offset_tensor = tf.random.uniform([batches, 2 * offsets, output_rows, output_cols])
+    mask_tensor = tf.random.uniform([batches, offsets, output_rows, output_cols])
+
+    conv = DeformableConv2D(
+        filters=filters,
+        kernel_size=kernel_size,
+        strides=strides,
+        padding=padding,
+        dilation_rate=dilation_rate,
+        weight_groups=weight_groups,
+        offset_groups=offset_groups,
+        use_mask=True,
+        use_bias=True
+    )
+
+    expected_output_shape = tuple(
+        conv.compute_output_shape([tf.shape(input_tensor), tf.shape(offset_tensor), tf.shape(mask_tensor)])
+    )
+
+    x = [input_tensor, offset_tensor, mask_tensor]
+    y = conv(x)
+    model = tf.keras.models.Model(x, y)
+    actual_output = model([input_tensor, offset_tensor, mask_tensor])
+
+    assert tf.keras.backend.dtype(y[0]) == 'float32'
+    assert actual_output.shape[1:] == expected_output_shape[0][1:]
