@@ -227,7 +227,7 @@ class DeformableConv2D(tf.keras.layers.Layer):
                 raise ValueError(f'DeformableConv2D Mask shape must be [{in_b}, {exp_mask_c}, {out_h}, {out_w}].')
 
         # Channel first
-        shape = (self.filters, input_shape[-1] // self.weight_groups,
+        shape = (self.filters, input_shape[1] // self.weight_groups,
                  self.kernel_size[0], self.kernel_size[1])
 
         self.filter_weights = self.add_weight(
