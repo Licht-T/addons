@@ -579,9 +579,6 @@ class DeformableConv2DOpBase : public OpKernel {
 
     const TensorShape &input_shape = input_tensor.shape();
     const TensorShape &filter_shape = filter_tensor.shape();
-    const TensorShape &bias_shape = bias_tensor.shape();
-    const TensorShape &offset_shape = offset_tensor.shape();
-    const TensorShape &mask_shape = mask_tensor.shape();
 
     auto input_batches = input_shape.dim_size(0);
     auto input_channels = input_shape.dim_size(1);
@@ -663,7 +660,7 @@ class DeformableConv2DOp : public DeformableConv2DOpBase<Device, T> {
       : DeformableConv2DOpBase<Device, T>(context) {}
 
   void Compute(OpKernelContext *context) override {
-    this->Compute(context);
+    DeformableConv2DOpBase<Device, T>::Compute(context);
 
     const Tensor &input_tensor = context->input(0);
     const Tensor &filter_tensor = context->input(1);
