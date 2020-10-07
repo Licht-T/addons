@@ -671,12 +671,6 @@ class DeformableConv2DOp : public DeformableConv2DOpBase<Device, T> {
     const Tensor &offset_tensor = context->input(3);
     const Tensor &mask_tensor = context->input(4);
 
-    const TensorShape &input_shape = input_tensor.shape();
-    const TensorShape &filter_shape = filter_tensor.shape();
-    const TensorShape &bias_shape = bias_tensor.shape();
-    const TensorShape &offset_shape = offset_tensor.shape();
-    const TensorShape &mask_shape = mask_tensor.shape();
-
     TensorShape column_buffer_shape(
         {p.input_channels * p.filter_rows * p.filter_cols, p.parallel_imgs,
          p.output_rows, p.output_cols});
