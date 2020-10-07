@@ -136,7 +136,7 @@ def _expected(
 
                                 output[batch, output_channel, output_row, output_col] \
                                     += (mask * filter_tensor[output_channel, input_channel, filter_row, filter_col] *
-                                                        _bilinear_interpolate(input_tensor[batch, c_in, :, :], y, x))
+                                        _bilinear_interpolate(input_tensor[batch, c_in, :, :], y, x))
 
     output += bias.reshape((1, output_channels, 1, 1))
     return output
@@ -241,24 +241,28 @@ def test_gradients(data_format):
     offset_tensor = tf.random.uniform([batches, 2 * offsets, output_rows, output_cols])
     mask_tensor = tf.random.uniform([batches, offsets, output_rows, output_cols])
 
+    conv = DeformableConv2D(
+        filters=filters,
+        kernel_size=kernel_size,
+        strides=strides,
+        padding=padding,
+        dilation_rate=dilation_rate,
+        weight_groups=weight_groups,
+        offset_groups=offset_groups,
+        use_mask=True,
+        use_bias=True
+    )
+
     def conv_fn(input_tensor, offset_tensor, mask_tensor):
-        return DeformableConv2D(
-            filters=filters,
-            kernel_size=kernel_size,
-            strides=strides,
-            padding=padding,
-            dilation_rate=dilation_rate,
-            weight_groups=weight_groups,
-            offset_groups=offset_groups,
-            use_mask=True,
-            use_bias=True
-        )([input_tensor, offset_tensor, mask_tensor])
+        return conv([input_tensor, offset_tensor, mask_tensor])
 
     theoretical, numerical = tf.test.compute_gradient(
         conv_fn, [input_tensor, offset_tensor, mask_tensor]
     )
 
     np.testing.assert_allclose(theoretical[0], numerical[0], atol=1e-3)
+    np.testing.assert_allclose(theoretical[1], numerical[1], atol=1e-3)
+    np.testing.assert_allclose(theoretical[2], numerical[2], atol=1e-3)
 #
 #
 # @pytest.mark.with_device(["cpu"])
