@@ -15,7 +15,6 @@
 
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
-#include "tensorflow/core/framework/shape_inference.h"
 
 namespace tensorflow {
 namespace addons {
@@ -174,8 +173,7 @@ REGISTER_OP("Addons>DeformableConv2D")
 
       return Status::OK();
     })
-    .Doc(R"doc(
-Compute Modulated Deformable Convolution.
+    .Doc(R"doc(Compute Modulated Deformable Convolution.
 
 This layer implements the operation from
 Deformable ConvNets v2: More Deformable, Better Results (Zhu et al.)
@@ -193,7 +191,7 @@ mask: A `Tensor` of the modulation which are applied for each position
     `kernel_height * kernel_width * offset_groups` if the modulation mode is
     enabled on Python side. `(0,)`-shape `Tensor` is passed when the modulation
     mode is disabled on Python side.
-stride: A list of 2 integers, specifying the strides of the convolution
+strides: A list of 2 integers, specifying the strides of the convolution
     along the height and width.
 weight_groups: An integer specifying the number of groups in which the input is
     split along the channel axis. Each group is convolved separately with

@@ -120,9 +120,9 @@ def _expected(
                         for filter_col in range(filter_cols):
                             for input_channel in range(input_channels_per_weight_groups):
                                 weight_group = output_channel // output_channels_per_weight_groups
-                                input_channel = weight_group * input_channels_per_weight_groups + input_channel
+                                current_input_channel = weight_group * input_channels_per_weight_groups + input_channel
 
-                                offset_group = input_channel // input_channels_per_offset_group
+                                offset_group = current_input_channel // input_channels_per_offset_group
                                 offset_idx = (offset_group * (filter_rows * filter_cols)
                                               + filter_row * filter_cols + filter_col)
 
@@ -136,7 +136,7 @@ def _expected(
 
                                 output[batch, output_channel, output_row, output_col] \
                                     += (mask * filter_tensor[output_channel, input_channel, filter_row, filter_col] *
-                                        _bilinear_interpolate(input_tensor[batch, input_channel, :, :], y, x))
+                                        _bilinear_interpolate(input_tensor[batch, current_input_channel, :, :], y, x))
 
     output += bias.reshape((1, output_channels, 1, 1))
     return output
@@ -301,6 +301,10 @@ def test_keras(data_format):
     offset_tensor = tf.random.uniform([batches, 2 * offsets, output_rows, output_cols])
     mask_tensor = tf.random.uniform([batches, offsets, output_rows, output_cols])
 
+    input_a = tf.keras.Input([input_channels, input_rows, input_cols])
+    input_b = tf.keras.Input([2 * offsets, output_rows, output_cols])
+    input_c = tf.keras.Input([offsets, output_rows, output_cols])
+
     conv = DeformableConv2D(
         filters=filters,
         kernel_size=kernel_size,
@@ -314,10 +318,10 @@ def test_keras(data_format):
     )
 
     expected_output_shape = tuple(
-        conv.compute_output_shape([tf.shape(input_tensor), tf.shape(offset_tensor), tf.shape(mask_tensor)])
+        conv.compute_output_shape([input_a.shape, input_b.shape, input_c.shape])
     )
 
-    x = [input_tensor, offset_tensor, mask_tensor]
+    x = [input_a, input_b, input_c]
     y = conv(x)
     model = tf.keras.models.Model(x, y)
     actual_output = model([input_tensor, offset_tensor, mask_tensor])
