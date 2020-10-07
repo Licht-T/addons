@@ -82,10 +82,8 @@ struct DeformableConv2DFunctorBase {
 
   virtual Status operator()(OpKernelContext* context) = 0;
 
-  Dtype BilinearInterpolate(int32 batch, int32 channel,
-                            Dtype y, Dtype x) {
-    EigenTensor<Dtype, 2> img =
-        _input_tensor.chip(batch, 0).chip(channel, 0);
+  Dtype BilinearInterpolate(int32 batch, int32 channel, Dtype y, Dtype x) {
+    EigenTensor<Dtype, 2> img = _input_tensor.chip(batch, 0).chip(channel, 0);
 
     auto max_height = img.dimension(0);
     auto max_width = img.dimension(1);

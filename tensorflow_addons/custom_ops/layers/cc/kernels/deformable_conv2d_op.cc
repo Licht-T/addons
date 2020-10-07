@@ -638,6 +638,7 @@ class DeformableConv2DOpBase : public OpKernel {
  protected:
   TensorFormat data_format;
   DeformableConv2DParams p;
+
  private:
   std::vector<int32> strides;
   int32 weight_groups;
@@ -715,15 +716,17 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
     const TensorShape &offset_shape = offset_tensor.shape();
     const TensorShape &mask_shape = mask_tensor.shape();
 
-    TensorShape column_buffer_shape({p.input_channels * p.filter_rows * p.filter_cols,
-                                     p.parallel_imgs, p.output_rows, p.output_cols});
+    TensorShape column_buffer_shape(
+        {p.input_channels * p.filter_rows * p.filter_cols, p.parallel_imgs,
+         p.output_rows, p.output_cols});
     Tensor column_buffer_tensor;
     OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<T>::value,
                                                    column_buffer_shape,
                                                    &column_buffer_tensor));
 
-    TensorShape output_shape = ShapeFromFormat(
-        data_format, p.input_batches, p.output_rows, p.output_cols, p.output_channels);
+    TensorShape output_shape =
+        ShapeFromFormat(data_format, p.input_batches, p.output_rows,
+                        p.output_cols, p.output_channels);
 
     Tensor *input_grad_tensor = nullptr;
     OP_REQUIRES_OK(
