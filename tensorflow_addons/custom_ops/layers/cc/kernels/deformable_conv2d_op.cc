@@ -64,11 +64,11 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
     const auto use_bias = _bias_tensor.dimension(0) > 0;
     const auto batches = p.input_batches / p.parallel_imgs;
 
-    auto filter_tensor_reshaped = _filter_tensor.reshape(
+    auto filter_tensor = _filter_tensor.reshape(
         Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
                  p.filter_channels, p.filter_rows, p.filter_cols}));
 
-    auto output_tensor_reshaped = _output_tensor.reshape(
+    auto output_tensor = _output_tensor.reshape(
         Shape5D({batches, p.weight_groups, p.output_channels / p.weight_groups,
                  p.parallel_imgs * p.output_rows, p.output_cols}));
 
@@ -78,19 +78,19 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
     const auto rows = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
-    auto column_buffer_tensor_reshaped =
+    auto column_buffer_tensor =
         _column_buffer_tensor.reshape(Shape3D({p.weight_groups, elems, cols}));
 
     for (auto b = 0; b < batches; b++) {
-      auto output_tensor_reshaped_batch = output_tensor_reshaped.chip(b, 0);
+      auto output_tensor_batch = output_tensor.chip(b, 0);
 
       this->DeformableIm2Col(b);
 
       for (auto g = 0; g < p.weight_groups; g++) {
         EigenTensor<Dtype, 2> filter_mtx =
-            filter_tensor_reshaped.chip(g, 0).reshape(Shape2D({rows, elems}));
+            filter_tensor.chip(g, 0).reshape(Shape2D({rows, elems}));
         EigenTensor<Dtype, 2> column_buffer_mtx =
-            column_buffer_tensor_reshaped.chip(g, 0);
+            column_buffer_tensor.chip(g, 0);
 
         auto mtx_shape = Shape2D({rows, cols});
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
@@ -99,12 +99,12 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
         EigenTensor<Dtype, 2> mul =
             filter_mtx.contract(column_buffer_mtx, product_dims);
 
-        output_tensor_reshaped_batch.chip(g, 0).reshape(mtx_shape) += mul;
+        output_tensor_batch.chip(g, 0).reshape(mtx_shape) += mul;
       }
     }
 
     auto output_tensor_transposed =
-        output_tensor_reshaped
+        output_tensor
             .reshape(Shape5D({batches, p.output_channels, p.parallel_imgs,
                               p.output_rows, p.output_cols}))
             .shuffle(Shape5D({0, 2, 1, 3, 4}))
@@ -186,11 +186,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   void ComputeFilterGrad() {
     const auto batches = p.input_batches / p.parallel_imgs;
 
-    auto filter_grad_tensor_reshaped = _filter_grad_tensor.reshape(
+    auto filter_grad_tensor = _filter_grad_tensor.reshape(
         Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
                  p.filter_channels, p.filter_rows, p.filter_cols}));
 
-    EigenTensor<Dtype, 5> output_grad_tensor_reshaped =
+    EigenTensor<Dtype, 5> output_grad_tensor =
         _output_grad_tensor
             .reshape(Shape5D({batches, p.parallel_imgs, p.output_channels,
                               p.output_rows, p.output_cols}))
@@ -205,21 +205,20 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     const auto rows = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
-    auto column_buffer_tensor_reshaped =
+    auto column_buffer_tensor =
         _column_buffer_tensor.reshape(Shape3D({p.weight_groups, elems, cols}));
 
     for (auto b = 0; b < batches; b++) {
-      auto output_grad_tensor_reshaped_batch =
-          output_grad_tensor_reshaped.chip(b, 0);
+      auto output_grad_tensor_batch = output_grad_tensor.chip(b, 0);
 
       this->DeformableIm2Col(b);
 
       for (auto g = 0; g < p.weight_groups; g++) {
         EigenTensor<Dtype, 2> column_buffer_mtx =
-            column_buffer_tensor_reshaped.chip(g, 0).shuffle(Shape2D({1, 0}));
+            column_buffer_tensor.chip(g, 0).shuffle(Shape2D({1, 0}));
 
         EigenTensor<Dtype, 2> output_grad_mtx =
-            output_grad_tensor_reshaped_batch.chip(g, 0).reshape(
+            output_grad_tensor_batch.chip(g, 0).reshape(
                 Shape2D({rows, cols}));
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
@@ -228,7 +227,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         EigenTensor<Dtype, 2> mul =
             output_grad_mtx.contract(column_buffer_mtx, product_dims);
 
-        filter_grad_tensor_reshaped.chip(g, 0).reshape(
+        filter_grad_tensor.chip(g, 0).reshape(
             Shape2D({rows, elems})) += mul;
       }
     }
@@ -237,11 +236,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   void ComputeInputOffsetMaskGrad() {
     auto batches = p.input_batches / p.parallel_imgs;
 
-    EigenTensor<Dtype, 5> filter_tensor_reshaped = _filter_tensor.reshape(
+    EigenTensor<Dtype, 5> filter_tensor = _filter_tensor.reshape(
         Shape5D({p.weight_groups, p.output_channels / p.weight_groups,
                  p.filter_channels, p.filter_rows, p.filter_cols}));
 
-    EigenTensor<Dtype, 5> output_grad_tensor_reshaped =
+    EigenTensor<Dtype, 5> output_grad_tensor =
         _output_grad_tensor
             .reshape(Shape5D({batches, p.parallel_imgs, p.output_channels,
                               p.output_rows, p.output_cols}))
@@ -256,21 +255,21 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     const auto elems = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
-    auto column_buffer_tensor_reshaped =
+    auto column_buffer_tensor =
         _column_buffer_tensor.reshape(Shape3D({p.weight_groups, rows, cols}));
 
     for (auto b = 0; b < batches; b++) {
       // FIXME: Check if correct
       _column_buffer_tensor.setZero();
 
-      auto output_grad_tensor_reshaped_chipped =
-          output_grad_tensor_reshaped.chip(b, 0);
+      auto output_grad_tensor_chipped =
+          output_grad_tensor.chip(b, 0);
       for (int g = 0; g < p.weight_groups; g++) {
-        EigenTensor<Dtype, 2> filter_mtx = filter_tensor_reshaped.chip(g, 0)
+        EigenTensor<Dtype, 2> filter_mtx = filter_tensor.chip(g, 0)
                                                .reshape(Shape2D({elems, rows}))
                                                .shuffle(Shape2D({1, 0}));
         EigenTensor<Dtype, 2> output_grad_mtx =
-            output_grad_tensor_reshaped_chipped.chip(g, 0).reshape(
+            output_grad_tensor_chipped.chip(g, 0).reshape(
                 Shape2D({elems, cols}));
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
@@ -279,7 +278,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         EigenTensor<Dtype, 2> mul =
             filter_mtx.contract(output_grad_mtx, product_dims);
 
-        column_buffer_tensor_reshaped.chip(g, 0) = mul;
+        column_buffer_tensor.chip(g, 0) = mul;
       }
 
       DeformableCol2ImForOffsetAndMask(b);
