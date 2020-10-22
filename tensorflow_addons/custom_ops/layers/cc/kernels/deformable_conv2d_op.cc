@@ -80,9 +80,9 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
       this->DeformableIm2Col(b);
 
       for (auto g = 0; g < p.weight_groups; g++) {
-        auto filter_mtx =
+        const auto filter_mtx =
             filter_tensor.SubSlice(g).template shaped<Dtype, 2>({rows, elems});
-        auto column_buffer_mtx =
+        const auto column_buffer_mtx =
             column_buffer_tensor_reshaped.SubSlice(g).tensor<Dtype, 2>();
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
@@ -178,7 +178,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
 
     if (p.use_bias) {
       auto bias_grad_eigen_tensor = bias_grad_tensor.tensor<Dtype, 1>();
-      auto output_grad_eigen_tensor = output_grad_tensor.shaped<Dtype, 5>(
+      const auto output_grad_eigen_tensor = output_grad_tensor.shaped<Dtype, 5>(
           {p.batches, p.output_channels, p.parallel_imgs, p.output_rows,
            p.output_cols});
 
@@ -218,7 +218,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                 .tensor<Dtype, 2>()
                 .shuffle(Shape2D({1, 0}));
 
-        auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
+        const auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
                                    .SubSlice(g)
                                    .shaped<Dtype, 2>({rows, cols});
 
@@ -256,7 +256,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
             filter_tensor.SubSlice(g)
                 .template shaped<Dtype, 2>({elems, rows})
                 .shuffle(Shape2D({1, 0}));
-        auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
+        const auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
                                    .SubSlice(g)
                                    .shaped<Dtype, 2>({elems, cols});
 
@@ -274,9 +274,8 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   }
 
   void DeformableCol2ImForOffsetAndMask(int32 b) {
-    auto num_kernels = p.output_rows * p.output_cols * 2 * p.filter_rows *
+    const auto num_kernels = p.output_rows * p.output_cols * 2 * p.filter_rows *
                        p.filter_cols * p.offset_groups * p.parallel_imgs;
-    auto offset_channels = 2 * p.filter_rows * p.filter_cols * p.offset_groups;
 
     const auto offset_eigen_tensor =
         offset_tensor.SubSlice(b).template tensor<Dtype, 7>();
@@ -290,9 +289,14 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
             {p.input_channels, p.filter_rows, p.filter_cols, p.parallel_imgs,
              p.output_rows, p.output_cols});
 
+    auto offset_grad_eigen_tensor = offset_grad_tensor.tensor<Dtype, 4>();
+    auto mask_grad_eigen_tensor = mask_grad_tensor.tensor<Dtype, 4>();
+
     for (auto k = 0; k < num_kernels; k++) {
       auto offset_grad_value = Dtype(0);
       auto mask_grad_value = Dtype(0);
+
+      const auto offset_channels = 2 * p.filter_rows * p.filter_cols * p.offset_groups;
 
       const auto offset_channel_step = p.filter_rows * p.filter_cols;
 
@@ -308,7 +312,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
       const auto current_batch =
           k / (p.output_rows * p.output_cols * offset_channels);
 
-      auto current_actual_batch = b * p.parallel_imgs + current_batch;
+      const auto current_actual_batch = b * p.parallel_imgs + current_batch;
 
       const auto current_offset_group =
           current_offset_channel / (2 * offset_channel_step);
@@ -352,7 +356,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
             input_channel_diff +
             current_offset_group * channels_per_offset_group;
 
-        auto filter_data = column_buffer_eigen_tensor(
+        const auto filter_data = column_buffer_eigen_tensor(
             selected_input_channel, selected_filter_row, selected_filter_col,
             current_batch, current_output_row, current_output_col);
 
@@ -369,17 +373,17 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         }
       }
 
-      offset_grad_tensor.tensor<Dtype, 4>()(
+      offset_grad_eigen_tensor(
           current_actual_batch, current_offset_channel, current_output_row,
           current_output_col) = offset_grad_value;
 
       if (p.use_mask && is_y_direction) {
-        auto current_mask_channel =
+        const auto current_mask_channel =
             (current_offset_group * p.filter_rows + current_filter_row) *
                 p.filter_cols +
             current_filter_col;
 
-        mask_grad_tensor.tensor<Dtype, 4>()(
+        mask_grad_eigen_tensor(
             current_actual_batch, current_mask_channel, current_output_row,
             current_output_col) = mask_grad_value;
       }
@@ -387,7 +391,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   }
 
   void DeformableCol2ImForInput(int32 b) {
-    auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
+    const auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
                        p.output_rows * p.output_cols * p.parallel_imgs;
 
     const auto offset_eigen_tensor =
@@ -399,6 +403,8 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
 
     const auto column_buffer_tensor_flattened =
         column_buffer_tensor.template shaped<Dtype, 1>({num_kernels});
+
+    auto input_grad_eigen_tensor = input_grad_tensor.tensor<Dtype, 4>();
 
     for (auto k = 0; k < num_kernels; k++) {
       const auto current_output_col = k % p.output_cols;
@@ -419,16 +425,16 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
       const auto current_offset_group =
           current_channel / (p.input_channels / p.offset_groups);
 
-      auto mask =
+      const auto mask =
           p.use_mask ? mask_eigen_tensor(current_batch, current_offset_group,
                                          current_filter_row, current_filter_col,
                                          current_output_row, current_output_col)
                      : Dtype(1);
 
-      auto offset_h = offset_eigen_tensor(
+      const auto offset_h = offset_eigen_tensor(
           current_batch, current_offset_group, current_filter_row,
           current_filter_col, 0, current_output_row, current_output_col);
-      auto offset_w = offset_eigen_tensor(
+      const auto offset_w = offset_eigen_tensor(
           current_batch, current_offset_group, current_filter_row,
           current_filter_col, 1, current_output_row, current_output_col);
 
@@ -439,18 +445,19 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
 
       for (auto dy = -1; dy <= 1; dy++) {
         for (auto dx = -1; dx <= 1; dx++) {
-          auto current_input_row = int(y) + dy;
-          auto current_input_col = int(x) + dx;
+          const auto current_input_row = int(y) + dy;
+          const auto current_input_col = int(x) + dx;
+
           if (p.input_rows > current_input_row && current_input_row >= 0 &&
               p.input_cols > current_input_col && current_input_col >= 0 &&
               std::abs(y - current_input_row) < 1 &&
               std::abs(x - current_input_col) < 1) {
-            auto weight = (1.0 - std::abs(y - current_input_row)) *
+            const auto weight = (1.0 - std::abs(y - current_input_row)) *
                           (1.0 - std::abs(x - current_input_col));
 
-            auto current_actual_batch = b * p.parallel_imgs + current_batch;
+            const auto current_actual_batch = b * p.parallel_imgs + current_batch;
 
-            input_grad_tensor.tensor<Dtype, 4>()(
+            input_grad_eigen_tensor(
                 current_actual_batch, current_channel, current_input_row,
                 current_input_col) +=
                 mask * weight * column_buffer_tensor_flattened(k);
@@ -467,18 +474,18 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                          .SubSlice(channel)
                          .template tensor<Dtype, 2>();
 
-    auto max_height = img.dimension(0);
-    auto max_width = img.dimension(1);
+    const auto max_height = img.dimension(0);
+    const auto max_width = img.dimension(1);
 
-    int y_low = floor(y);
-    int x_low = floor(x);
-    int y_high = y_low + 1;
-    int x_high = x_low + 1;
+    const int y_low = floor(y);
+    const int x_low = floor(x);
+    const int y_high = y_low + 1;
+    const int x_high = x_low + 1;
 
-    bool valid_y_low = max_height > y_low && y_low >= 0;
-    bool valid_y_high = max_height > y_high && y_high >= 0;
-    bool valid_x_low = max_width > x_low && x_low >= 0;
-    bool valid_x_high = max_width > x_high && x_high >= 0;
+    const bool valid_y_low = max_height > y_low && y_low >= 0;
+    const bool valid_y_high = max_height > y_high && y_high >= 0;
+    const bool valid_x_low = max_width > x_low && x_low >= 0;
+    const bool valid_x_high = max_width > x_high && x_high >= 0;
 
     auto v_yx = Dtype(0);
     if (valid_y_low && valid_x_low) {
@@ -501,10 +508,10 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     }
 
     if (is_y_direction) {
-      auto dx = x - x_low;
+      const auto dx = x - x_low;
       return (v_YX - v_yX) * dx + (v_Yx - v_yx) * (1 - dx);
     } else {
-      auto dy = y - y_low;
+      const auto dy = y - y_low;
       return (v_YX - v_Yx) * dy + (v_yX - v_yx) * (1 - dy);
     }
   }
@@ -546,23 +553,23 @@ class DeformableConv2DOpBase : public OpKernel {
     const TensorShape &input_shape = input_tensor.shape();
     const TensorShape &filter_shape = filter_tensor.shape();
 
-    auto input_batches = input_shape.dim_size(0);
-    auto input_channels = input_shape.dim_size(1);
-    auto input_rows = input_shape.dim_size(2);
-    auto input_cols = input_shape.dim_size(3);
+    const auto input_batches = input_shape.dim_size(0);
+    const auto input_channels = input_shape.dim_size(1);
+    const auto input_rows = input_shape.dim_size(2);
+    const auto input_cols = input_shape.dim_size(3);
 
-    auto output_channels = filter_shape.dim_size(0);
-    auto filter_channels = filter_shape.dim_size(1);
-    auto filter_rows = filter_shape.dim_size(2);
-    auto filter_cols = filter_shape.dim_size(3);
+    const auto output_channels = filter_shape.dim_size(0);
+    const auto filter_channels = filter_shape.dim_size(1);
+    const auto filter_rows = filter_shape.dim_size(2);
+    const auto filter_cols = filter_shape.dim_size(3);
 
-    auto dilation_rows = dilations[0];
-    auto dilation_cols = dilations[1];
+    const auto dilation_rows = dilations[0];
+    const auto dilation_cols = dilations[1];
 
-    auto stride_rows = strides[0];
-    auto stride_cols = strides[1];
+    const auto stride_rows = strides[0];
+    const auto stride_cols = strides[1];
 
-    auto parallel_imgs = GetParallelImgs(input_batches);
+    const auto parallel_imgs = GetParallelImgs(input_batches);
 
     int64 output_rows, output_cols;
     int64 padding_rows, padding_cols;
