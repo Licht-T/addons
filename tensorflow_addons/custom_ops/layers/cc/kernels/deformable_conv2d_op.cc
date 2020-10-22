@@ -68,13 +68,17 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
     const auto rows = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
+    auto status = Status::OK();
+
     Tensor output_tmp_tensor;
-    OP_REQUIRES_OK(
-        context, context->allocate_temp(
-                     DataTypeToEnum<Dtype>::value,
-                     TensorShape({p.batches, p.output_channels, p.parallel_imgs,
-                                  p.output_rows, p.output_cols}),
-                     &output_tmp_tensor));
+    status = context->allocate_temp(
+        DataTypeToEnum<Dtype>::value,
+        TensorShape({p.batches, p.output_channels, p.parallel_imgs,
+                     p.output_rows, p.output_cols}),
+        &output_tmp_tensor);
+    if (status != Status::OK()) {
+      return status;
+    }
 
     Tensor output_tmp_tensor_reshaped(output_tmp_tensor.dtype());
     CHECK(output_tmp_tensor_reshaped.CopyFrom(
@@ -110,9 +114,12 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
         output_tensor,
         TensorShape({p.batches, p.parallel_imgs, p.output_channels,
                      p.output_rows, p.output_cols})));
-    OP_REQUIRES_OK(context,
-                   DoTranspose(context->device(), output_tmp_tensor,
-                               {0, 2, 1, 3, 4}, &output_tensor_reshaped));
+    status = DoTranspose(context->device(), output_tmp_tensor, {0, 2, 1, 3, 4},
+                         &output_tensor_reshaped);
+
+    if (status != Status::OK()) {
+      return status;
+    }
 
     if (p.use_bias) {
       auto bias_tensor_broadcasted =
@@ -124,7 +131,7 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
       output_tensor.tensor<Dtype, 4>() += bias_tensor_broadcasted;
     }
 
-    return Status::OK();
+    return status;
   }
 
   Tensor output_tensor;
