@@ -210,7 +210,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
     Tensor column_buffer_tensor_transposed;
-    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<T>::value,
+    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<Dtype>::value,
                                                    TensorShape({p.weight_groups, cols, elems}),
                                                    &column_buffer_tensor_transposed));
     OP_REQUIRES_OK(
