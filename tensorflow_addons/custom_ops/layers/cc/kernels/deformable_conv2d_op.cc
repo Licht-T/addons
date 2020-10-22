@@ -24,6 +24,7 @@
 #include "tensorflow/core/framework/common_shape_fns.h"
 //#include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/kernels/tensor_array.h"
 #include "tensorflow/core/kernels/transpose_functor.h"
 #include "tensorflow/core/util/work_sharder.h"
 
@@ -58,10 +59,12 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
             _mask_tensor, _column_buffer_tensor, _p),
         output_tensor(_output_tensor->dtype()) {
     CHECK(output_tensor.CopyFrom(*_output_tensor, _output_tensor->shape()));
-    output_tensor.tensor<Dtype, 5>().setZero();
   }
 
   Status operator()(OpKernelContext *context) {
+    TF_RETURN_IF_ERROR(
+        tensor_array::TensorSetZero<CPUDevice, Dtype>(context, &output_tensor));
+
     // input_channels * filter_rows * filter_cols / weight_groups ==
     // filter_channels * filter_rows * filter_cols
     const auto elems = p.filter_channels * p.filter_rows * p.filter_cols;
@@ -169,13 +172,16 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                                       _offset_grad_tensor->shape()));
     CHECK(mask_grad_tensor.CopyFrom(*_mask_grad_tensor,
                                     _mask_grad_tensor->shape()));
-
-    input_grad_tensor.tensor<Dtype, 4>().setZero();
-    filter_grad_tensor.tensor<Dtype, 5>().setZero();
-    column_buffer_tensor.template tensor<Dtype, 4>().setZero();
   }
 
   Status operator()(OpKernelContext *context) {
+    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, Dtype>(
+        context, &input_grad_tensor));
+    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, Dtype>(
+        context, &filter_grad_tensor));
+    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, Dtype>(
+        context, &column_buffer_tensor));
+
     ComputeInputOffsetMaskGrad(context);
 
     ComputeFilterGrad(context);
