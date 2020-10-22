@@ -96,6 +96,7 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
       }
     }
 
+    // FIXME: 事前にTranspose
     auto output_tensor_transposed =
         output_tensor_reshaped.tensor<Dtype, 5>()
             .reshape(Shape5D({p.batches, p.output_channels, p.parallel_imgs,
@@ -172,9 +173,9 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   }
 
   Status operator()(OpKernelContext *context) {
-    ComputeInputOffsetMaskGrad();
+    ComputeInputOffsetMaskGrad(context);
 
-    ComputeFilterGrad();
+    ComputeFilterGrad(context);
 
     if (p.use_bias) {
       auto bias_grad_eigen_tensor = bias_grad_tensor.tensor<Dtype, 1>();
@@ -190,7 +191,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     return Status::OK();
   }
 
-  void ComputeFilterGrad() {
+  void ComputeFilterGrad(OpKernelContext *context) {
     Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
     CHECK(output_grad_tensor_reshaped.CopyFrom(
         output_grad_tensor,
@@ -204,19 +205,25 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     const auto rows = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
-    // FIXME: 事前にTranspose
     Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
         column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
+
+    Tensor column_buffer_tensor_transposed;
+    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<T>::value,
+                                                   TensorShape({p.weight_groups, cols, elems}),
+                                                   &column_buffer_tensor_transposed));
+    OP_REQUIRES_OK(
+        context, DoTranspose(context->device(), column_buffer_tensor_reshaped,
+                             {0, 2, 1}, &column_buffer_tensor_transposed));
 
     for (auto b = 0; b < p.batches; b++) {
       this->DeformableIm2Col(b);
 
       for (auto g = 0; g < p.weight_groups; g++) {
         EigenTensor<Dtype, 2> column_buffer_mtx =
-            column_buffer_tensor_reshaped.SubSlice(g)
-                .tensor<Dtype, 2>()
-                .shuffle(Shape2D({1, 0}));
+            column_buffer_tensor_transposed.SubSlice(g)
+                .tensor<Dtype, 2>();
 
         const auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
                                    .SubSlice(g)
@@ -231,7 +238,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     }
   }
 
-  void ComputeInputOffsetMaskGrad() {
+  void ComputeInputOffsetMaskGrad(OpKernelContext *context) {
     Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
     CHECK(output_grad_tensor_reshaped.CopyFrom(
         output_grad_tensor,
