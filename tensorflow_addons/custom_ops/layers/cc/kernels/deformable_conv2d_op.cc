@@ -68,9 +68,17 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
     const auto rows = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
-    Tensor output_tensor_reshaped(output_tensor.dtype());
-    CHECK(output_tensor_reshaped.CopyFrom(
-        output_tensor,
+    Tensor output_tmp_tensor;
+    OP_REQUIRES_OK(
+        context, context->allocate_temp(
+                     DataTypeToEnum<Dtype>::value,
+                     TensorShape({p.batches, p.output_channels, p.parallel_imgs,
+                                  p.output_rows, p.output_cols}),
+                     &output_tmp_tensor));
+
+    Tensor output_tmp_tensor_reshaped(output_tmp_tensor.dtype());
+    CHECK(output_tmp_tensor_reshaped.CopyFrom(
+        output_tmp_tensor,
         TensorShape({p.batches, p.weight_groups,
                      p.output_channels / p.weight_groups,
                      p.parallel_imgs * p.output_rows, p.output_cols})));
@@ -91,22 +99,20 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
             Eigen::IndexPair<int>(1, 0)};
 
-        output_tensor_reshaped.SubSlice(b).SubSlice(g).shaped<Dtype, 2>(
+        output_tmp_tensor_reshaped.SubSlice(b).SubSlice(g).shaped<Dtype, 2>(
             {rows, cols}) +=
             filter_mtx.contract(column_buffer_mtx, product_dims);
       }
     }
 
-    // FIXME: 事前にTranspose
-    auto output_tensor_transposed =
-        output_tensor_reshaped.tensor<Dtype, 5>()
-            .reshape(Shape5D({p.batches, p.output_channels, p.parallel_imgs,
-                              p.output_rows, p.output_cols}))
-            .shuffle(Shape5D({0, 2, 1, 3, 4}))
-            .reshape(Shape4D({p.input_batches, p.output_channels, p.output_rows,
-                              p.output_cols}));
-
-    output_tensor.tensor<Dtype, 4>() = output_tensor_transposed.eval();
+    Tensor output_tensor_reshaped(output_tensor.dtype());
+    CHECK(output_tensor_reshaped.CopyFrom(
+        output_tensor,
+        TensorShape({p.batches, p.parallel_imgs, p.output_channels,
+                     p.output_rows, p.output_cols})));
+    OP_REQUIRES_OK(context,
+                   DoTranspose(context->device(), output_tmp_tensor,
+                               {0, 2, 1, 3, 4}, &output_tensor_reshaped));
 
     if (p.use_bias) {
       auto bias_tensor_broadcasted =

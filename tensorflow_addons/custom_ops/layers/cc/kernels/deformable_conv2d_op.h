@@ -67,8 +67,10 @@ namespace functor {
 
 template <typename Device, typename Dtype>
 struct DeformableConv2DFunctorBase {
-  DeformableConv2DFunctorBase(const Tensor* _input_tensor, const Tensor* _filter_tensor,
-                              const Tensor* _bias_tensor, const Tensor* _offset_tensor,
+  DeformableConv2DFunctorBase(const Tensor* _input_tensor,
+                              const Tensor* _filter_tensor,
+                              const Tensor* _bias_tensor,
+                              const Tensor* _offset_tensor,
                               const Tensor* _mask_tensor,
                               Tensor* _column_buffer_tensor,
                               DeformableConv2DParams* _p)
@@ -80,8 +82,9 @@ struct DeformableConv2DFunctorBase {
         column_buffer_tensor(_column_buffer_tensor->dtype()),
         p(*_p) {
     CHECK(input_tensor.CopyFrom(
-        *_input_tensor, TensorShape({p.batches, p.parallel_imgs, p.input_channels,
-                                     p.input_rows, p.input_cols})));
+        *_input_tensor,
+        TensorShape({p.batches, p.parallel_imgs, p.input_channels, p.input_rows,
+                     p.input_cols})));
     CHECK(filter_tensor.CopyFrom(
         *_filter_tensor,
         TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
@@ -96,8 +99,9 @@ struct DeformableConv2DFunctorBase {
     if (p.use_mask) {
       CHECK(mask_tensor.CopyFrom(
           *_mask_tensor,
-          TensorShape({p.batches, p.parallel_imgs, p.offset_groups, p.filter_rows,
-                       p.filter_cols, p.output_rows, p.output_cols})));
+          TensorShape({p.batches, p.parallel_imgs, p.offset_groups,
+                       p.filter_rows, p.filter_cols, p.output_rows,
+                       p.output_cols})));
     } else {
       CHECK(mask_tensor.CopyFrom(*_mask_tensor,
                                  TensorShape({0, 0, 0, 0, 0, 0, 0})));
@@ -241,15 +245,13 @@ struct DeformableConv2DFunctorBase {
 template <typename Device, typename Dtype>
 struct DeformableConv2DFunctor
     : public DeformableConv2DFunctorBase<Device, Dtype> {
-  DeformableConv2DFunctor(
-      const Tensor* _input_tensor,
-      const Tensor* _filter_tensor,
-      const Tensor* _bias_tensor,
-      const Tensor* _offset_tensor,
-      const Tensor* _mask_tensor,
-      Tensor* _column_buffer_tensor,
-      Tensor* _output_tensor,
-      DeformableConv2DParams* _p);
+  DeformableConv2DFunctor(const Tensor *_input_tensor,
+                          const Tensor *_filter_tensor,
+                          const Tensor *_bias_tensor,
+                          const Tensor *_offset_tensor,
+                          const Tensor *_mask_tensor,
+                          Tensor *_column_buffer_tensor, Tensor *_output_tensor,
+                          DeformableConv2DParams *_p);
 
   Status operator()(OpKernelContext* context);
 
@@ -260,18 +262,12 @@ template <typename Device, typename Dtype>
 struct DeformableConv2DGradFunctor
     : public DeformableConv2DFunctorBase<Device, Dtype> {
   DeformableConv2DGradFunctor(
-      const Tensor* _input_tensor,
-      const Tensor* _filter_tensor,
-      const Tensor* _bias_tensor,
-      const Tensor* _offset_tensor,
-      const Tensor* _mask_tensor,
-      Tensor* _output_grad_tensor,
-      Tensor* input_grad_tensor,
-      Tensor* filter_grad_tensor,
-      Tensor* bias_grad_tensor,
-      Tensor* offset_grad_tensor,
-      Tensor* mask_grad_tensor,
-      Tensor* column_buffer_tensor,
+      const Tensor* _input_tensor, const Tensor* _filter_tensor,
+      const Tensor* _bias_tensor, const Tensor* _offset_tensor,
+      const Tensor* _mask_tensor, Tensor* _output_grad_tensor,
+      Tensor* input_grad_tensor, Tensor* filter_grad_tensor,
+      Tensor* bias_grad_tensor, Tensor* offset_grad_tensor,
+      Tensor* mask_grad_tensor, Tensor* column_buffer_tensor,
       DeformableConv2DParams* p);
 
   Status operator()(OpKernelContext* context);
