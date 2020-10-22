@@ -46,10 +46,13 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
   using DeformableConv2DFunctorBase<CPUDevice, Dtype>::column_buffer_tensor;
   using DeformableConv2DFunctorBase<CPUDevice, Dtype>::p;
 
-  DeformableConv2DFunctor(const Tensor *_input_tensor, const Tensor *_filter_tensor,
-                          const Tensor *_bias_tensor, const Tensor *_offset_tensor,
-                          const Tensor *_mask_tensor, Tensor *_column_buffer_tensor,
-                          Tensor *_output_tensor, DeformableConv2DParams *_p)
+  DeformableConv2DFunctor(const Tensor *_input_tensor,
+                          const Tensor *_filter_tensor,
+                          const Tensor *_bias_tensor,
+                          const Tensor *_offset_tensor,
+                          const Tensor *_mask_tensor,
+                          Tensor *_column_buffer_tensor, Tensor *_output_tensor,
+                          DeformableConv2DParams *_p)
       : DeformableConv2DFunctorBase<CPUDevice, Dtype>(
             _input_tensor, _filter_tensor, _bias_tensor, _offset_tensor,
             _mask_tensor, _column_buffer_tensor, _p),
@@ -81,18 +84,16 @@ struct DeformableConv2DFunctor<CPUDevice, Dtype>
 
       for (auto g = 0; g < p.weight_groups; g++) {
         const auto filter_mtx =
-            filter_tensor.SubSlice(g).template shaped<Dtype, 2>({rows, elems});
+            filter_tensor.SubSlice(g).template tensor<Dtype, 2>();
         const auto column_buffer_mtx =
             column_buffer_tensor_reshaped.SubSlice(g).tensor<Dtype, 2>();
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
             Eigen::IndexPair<int>(1, 0)};
 
-        EigenTensor<Dtype, 2> mul =
-            filter_mtx.contract(column_buffer_mtx, product_dims);
-
         output_tensor_reshaped.SubSlice(b).SubSlice(g).shaped<Dtype, 2>(
-            {rows, cols}) += mul;
+            {rows, cols}) +=
+            filter_mtx.contract(column_buffer_mtx, product_dims);
       }
     }
 
@@ -135,8 +136,9 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
   using DeformableConv2DFunctorBase<CPUDevice, Dtype>::p;
 
   DeformableConv2DGradFunctor(
-      const Tensor *_input_tensor, const Tensor *_filter_tensor, const Tensor *_bias_tensor,
-      const Tensor *_offset_tensor, const Tensor *_mask_tensor, Tensor *_output_grad_tensor,
+      const Tensor *_input_tensor, const Tensor *_filter_tensor,
+      const Tensor *_bias_tensor, const Tensor *_offset_tensor,
+      const Tensor *_mask_tensor, Tensor *_output_grad_tensor,
       Tensor *_input_grad_tensor, Tensor *_filter_grad_tensor,
       Tensor *_bias_grad_tensor, Tensor *_offset_grad_tensor,
       Tensor *_mask_grad_tensor, Tensor *_column_buffer_tensor,
@@ -210,24 +212,24 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
     Tensor column_buffer_tensor_transposed;
-    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<Dtype>::value,
-                                                   TensorShape({p.weight_groups, cols, elems}),
-                                                   &column_buffer_tensor_transposed));
-    OP_REQUIRES_OK(
-        context, DoTranspose(context->device(), column_buffer_tensor_reshaped,
-                             {0, 2, 1}, &column_buffer_tensor_transposed));
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<Dtype>::value,
+                                TensorShape({p.weight_groups, cols, elems}),
+                                &column_buffer_tensor_transposed));
+    OP_REQUIRES_OK(context,
+                   DoTranspose(context->device(), column_buffer_tensor_reshaped,
+                               {0, 2, 1}, &column_buffer_tensor_transposed));
 
     for (auto b = 0; b < p.batches; b++) {
       this->DeformableIm2Col(b);
 
       for (auto g = 0; g < p.weight_groups; g++) {
-        EigenTensor<Dtype, 2> column_buffer_mtx =
-            column_buffer_tensor_transposed.SubSlice(g)
-                .tensor<Dtype, 2>();
+        const auto column_buffer_mtx =
+            column_buffer_tensor_transposed.SubSlice(g).tensor<Dtype, 2>();
 
         const auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
-                                   .SubSlice(g)
-                                   .shaped<Dtype, 2>({rows, cols});
+                                         .SubSlice(g)
+                                         .shaped<Dtype, 2>({rows, cols});
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
             Eigen::IndexPair<int>(1, 0)};
@@ -252,20 +254,25 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
     const auto elems = p.output_channels / p.weight_groups;
     const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
 
+    Tensor filter_tensor_transposed;
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<Dtype>::value,
+                                TensorShape({p.weight_groups, cols, elems}),
+                                &filter_tensor_transposed));
+    OP_REQUIRES_OK(context, DoTranspose(context->device(), filter_tensor,
+                                        {0, 2, 1}, &filter_tensor_transposed));
+
     Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
         column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
     for (auto b = 0; b < p.batches; b++) {
       for (int g = 0; g < p.weight_groups; g++) {
-        // FIXME: 事前にTranspose
-        EigenTensor<Dtype, 2> filter_mtx =
-            filter_tensor.SubSlice(g)
-                .template shaped<Dtype, 2>({elems, rows})
-                .shuffle(Shape2D({1, 0}));
+        const auto filter_mtx =
+            filter_tensor_transposed.SubSlice(g).template tensor<Dtype, 2>();
         const auto output_grad_mtx = output_grad_tensor_reshaped.SubSlice(b)
-                                   .SubSlice(g)
-                                   .shaped<Dtype, 2>({elems, cols});
+                                         .SubSlice(g)
+                                         .shaped<Dtype, 2>({elems, cols});
 
         Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
             Eigen::IndexPair<int>(1, 0)};
@@ -282,7 +289,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
 
   void DeformableCol2ImForOffsetAndMask(int32 b) {
     const auto num_kernels = p.output_rows * p.output_cols * 2 * p.filter_rows *
-                       p.filter_cols * p.offset_groups * p.parallel_imgs;
+                             p.filter_cols * p.offset_groups * p.parallel_imgs;
 
     const auto offset_eigen_tensor =
         offset_tensor.SubSlice(b).template tensor<Dtype, 7>();
@@ -303,7 +310,8 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
       auto offset_grad_value = Dtype(0);
       auto mask_grad_value = Dtype(0);
 
-      const auto offset_channels = 2 * p.filter_rows * p.filter_cols * p.offset_groups;
+      const auto offset_channels =
+          2 * p.filter_rows * p.filter_cols * p.offset_groups;
 
       const auto offset_channel_step = p.filter_rows * p.filter_cols;
 
@@ -380,9 +388,9 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
         }
       }
 
-      offset_grad_eigen_tensor(
-          current_actual_batch, current_offset_channel, current_output_row,
-          current_output_col) = offset_grad_value;
+      offset_grad_eigen_tensor(current_actual_batch, current_offset_channel,
+                               current_output_row, current_output_col) =
+          offset_grad_value;
 
       if (p.use_mask && is_y_direction) {
         const auto current_mask_channel =
@@ -390,16 +398,16 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
                 p.filter_cols +
             current_filter_col;
 
-        mask_grad_eigen_tensor(
-            current_actual_batch, current_mask_channel, current_output_row,
-            current_output_col) = mask_grad_value;
+        mask_grad_eigen_tensor(current_actual_batch, current_mask_channel,
+                               current_output_row, current_output_col) =
+            mask_grad_value;
       }
     }
   }
 
   void DeformableCol2ImForInput(int32 b) {
     const auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
-                       p.output_rows * p.output_cols * p.parallel_imgs;
+                             p.output_rows * p.output_cols * p.parallel_imgs;
 
     const auto offset_eigen_tensor =
         offset_tensor.SubSlice(b).template tensor<Dtype, 7>();
@@ -460,13 +468,13 @@ struct DeformableConv2DGradFunctor<CPUDevice, Dtype>
               std::abs(y - current_input_row) < 1 &&
               std::abs(x - current_input_col) < 1) {
             const auto weight = (1.0 - std::abs(y - current_input_row)) *
-                          (1.0 - std::abs(x - current_input_col));
+                                (1.0 - std::abs(x - current_input_col));
 
-            const auto current_actual_batch = b * p.parallel_imgs + current_batch;
+            const auto current_actual_batch =
+                b * p.parallel_imgs + current_batch;
 
-            input_grad_eigen_tensor(
-                current_actual_batch, current_channel, current_input_row,
-                current_input_col) +=
+            input_grad_eigen_tensor(current_actual_batch, current_channel,
+                                    current_input_row, current_input_col) +=
                 mask * weight * column_buffer_tensor_flattened(k);
           }
         }
@@ -668,10 +676,8 @@ class DeformableConv2DOp : public DeformableConv2DOpBase<Device, T> {
                    context->allocate_output(0, output_shape, &output_tensor));
 
     functor::DeformableConv2DFunctor<Device, T> deformableConv2DFunc(
-        &input_tensor, &filter_tensor,
-        &bias_tensor, &offset_tensor,
-        &mask_tensor, &column_buffer_tensor,
-        output_tensor, &p);
+        &input_tensor, &filter_tensor, &bias_tensor, &offset_tensor,
+        &mask_tensor, &column_buffer_tensor, output_tensor, &p);
     Status s = deformableConv2DFunc(context);
 
     OP_REQUIRES_OK(context, s);
