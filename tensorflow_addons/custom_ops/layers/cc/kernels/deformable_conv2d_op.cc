@@ -102,18 +102,6 @@ struct DeformableConv2DFunctor<CPUDevice, T>
         // FIXME: TF2.3でargsが変わってる
         LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
                                                 bcast, &out);
-
-        //        const auto filter_mtx =
-        //            filter_tensor.SubSlice(g).template tensor<T, 2>();
-        //        const auto column_buffer_mtx =
-        //            column_buffer_tensor_reshaped.SubSlice(g).tensor<T, 2>();
-        //
-        //        Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
-        //            Eigen::IndexPair<int>(1, 0)};
-        //
-        //        output_tmp_tensor_reshaped.SubSlice(b).SubSlice(g).tensor<T,
-        //        2>() +=
-        //            filter_mtx.contract(column_buffer_mtx, product_dims);
       }
     }
 
@@ -250,21 +238,6 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
         // FIXME: TF2.3でargsが変わってる
         LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
                                                 bcast, &out);
-
-        //        const auto column_buffer_mtx =
-        //            column_buffer_tensor_transposed.SubSlice(g).tensor<T,
-        //            2>();
-        //
-        //        const auto output_grad_mtx =
-        //        output_grad_tensor_reshaped.SubSlice(b)
-        //                                         .SubSlice(g)
-        //                                         .tensor<T, 2>();
-        //
-        //        Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
-        //            Eigen::IndexPair<int>(1, 0)};
-        //
-        //        filter_grad_tensor.SubSlice(g).tensor<T, 2>() +=
-        //            output_grad_mtx.contract(column_buffer_mtx, product_dims);
       }
     }
   }
@@ -305,20 +278,6 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
         // FIXME: TF2.3でargsが変わってる
         LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
                                                 bcast, &out);
-
-        //        const auto filter_mtx =
-        //            filter_tensor_transposed.SubSlice(g).template tensor<T,
-        //            2>();
-        //        const auto output_grad_mtx =
-        //        output_grad_tensor_reshaped.SubSlice(b)
-        //                                         .SubSlice(g)
-        //                                         .tensor<T, 2>();
-        //
-        //        Eigen::array<Eigen::IndexPair<int>, 1> product_dims = {
-        //            Eigen::IndexPair<int>(1, 0)};
-        //
-        //        column_buffer_tensor_reshaped.SubSlice(g).tensor<T, 2>() =
-        //            filter_mtx.contract(output_grad_mtx, product_dims);
       }
 
       DeformableCol2ImForOffsetAndMask(b);
