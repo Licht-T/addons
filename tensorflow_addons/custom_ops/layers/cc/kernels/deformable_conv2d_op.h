@@ -21,20 +21,7 @@
 
 namespace tensorflow {
 namespace addons {
-using Shape8D = Eigen::array<Eigen::DenseIndex, 8>;
-using Shape7D = Eigen::array<Eigen::DenseIndex, 7>;
-using Shape6D = Eigen::array<Eigen::DenseIndex, 6>;
-using Shape5D = Eigen::array<Eigen::DenseIndex, 5>;
 using Shape4D = Eigen::array<Eigen::DenseIndex, 4>;
-using Shape3D = Eigen::array<Eigen::DenseIndex, 3>;
-using Shape2D = Eigen::array<Eigen::DenseIndex, 2>;
-using Shape1D = Eigen::array<Eigen::DenseIndex, 1>;
-
-template <typename T, int NDIMS = 1, typename IndexType = Eigen::DenseIndex>
-using EigenTensor = Eigen::Tensor<T, NDIMS, Eigen::RowMajor, IndexType>;
-template <typename T, int NDIMS = 1, typename IndexType = Eigen::DenseIndex>
-using EigenTensorRef =
-    Eigen::TensorRef<Eigen::Tensor<T, NDIMS, Eigen::RowMajor, IndexType>>;
 
 static const int kMaxParallelImgs = 32;
 
@@ -65,7 +52,7 @@ struct DeformableConv2DParams {
 
 namespace functor {
 
-template <typename Device, typename Dtype>
+template <typename Device, typename T>
 struct DeformableConv2DFunctorBase {
   DeformableConv2DFunctorBase(const Tensor* _input_tensor,
                               const Tensor* _filter_tensor,
@@ -87,7 +74,7 @@ struct DeformableConv2DFunctorBase {
                      p.input_cols})));
     CHECK(filter_tensor.CopyFrom(
         *_filter_tensor,
-        TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
+        TensorShape({p.weight_groups, 1, p.output_channels / p.weight_groups,
                      p.filter_channels * p.filter_rows * p.filter_cols})));
     CHECK(bias_tensor.CopyFrom(*_bias_tensor, bias_tensor.shape()));
 
@@ -115,18 +102,17 @@ struct DeformableConv2DFunctorBase {
 
   virtual Status operator()(OpKernelContext* context) = 0;
 
-  Dtype BilinearInterpolate(int32 b, int32 batch, int32 channel, Dtype y,
-                            Dtype x) {
+  T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x) {
     auto img = input_tensor.SubSlice(b)
                    .SubSlice(batch)
                    .SubSlice(channel)
-                   .tensor<Dtype, 2>();
+                   .tensor<T, 2>();
 
     auto max_height = img.dimension(0);
     auto max_width = img.dimension(1);
 
     if (y <= -1 || max_height <= y || x <= -1 || max_width <= x) {
-      return Dtype(0);
+      return T(0);
     }
 
     int y_low = floor(y);
@@ -134,22 +120,22 @@ struct DeformableConv2DFunctorBase {
     int y_high = y_low + 1;
     int w_high = x_low + 1;
 
-    auto v1 = Dtype(0);
+    auto v1 = T(0);
     if (y_low >= 0 && x_low >= 0) {
       v1 = img(y_low, x_low);
     }
 
-    auto v2 = Dtype(0);
+    auto v2 = T(0);
     if (y_low >= 0 && w_high <= max_width - 1) {
       v2 = img(y_low, w_high);
     }
 
-    auto v3 = Dtype(0);
+    auto v3 = T(0);
     if (y_high <= max_height - 1 && x_low >= 0) {
       v3 = img(y_high, x_low);
     }
 
-    auto v4 = Dtype(0);
+    auto v4 = T(0);
     if (y_high <= max_height - 1 && w_high <= max_width - 1) {
       v4 = img(y_high, w_high);
     }
@@ -171,7 +157,7 @@ struct DeformableConv2DFunctorBase {
     auto num_kernels =
         p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;
 
-    auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<Dtype, 4>();
+    auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<T, 4>();
 
     for (auto k = 0; k < num_kernels; k++) {
       const auto current_output_col = k % p.output_cols;
@@ -191,14 +177,14 @@ struct DeformableConv2DFunctorBase {
       const auto offset_eigen_tensor = offset_tensor.SubSlice(b)
                                            .SubSlice(current_batch)
                                            .SubSlice(group_index)
-                                           .tensor<Dtype, 5>();
+                                           .tensor<T, 5>();
 
       const auto mask_eigen_tensor =
           p.use_mask ? mask_tensor.SubSlice(b)
                            .SubSlice(current_batch)
                            .SubSlice(group_index)
-                           .tensor<Dtype, 4>()
-                     : mask_tensor.shaped<Dtype, 4>({0, 0, 0, 0});
+                           .tensor<T, 4>()
+                     : mask_tensor.shaped<T, 4>({0, 0, 0, 0});
 
       auto column_buffer_tensor_channel = current_output_channel;
       for (auto current_filter_row = 0; current_filter_row < p.filter_rows;
@@ -215,7 +201,7 @@ struct DeformableConv2DFunctorBase {
           auto mask = p.use_mask ? mask_eigen_tensor(
                                        current_filter_row, current_filter_col,
                                        current_output_row, current_output_col)
-                                 : Dtype(1);
+                                 : T(1);
 
           auto y = (current_output_row * p.stride_rows - p.padding_rows) +
                    current_filter_row * p.dilation_rows + offset_h;
@@ -242,25 +228,24 @@ struct DeformableConv2DFunctorBase {
   DeformableConv2DParams p;
 };
 
-template <typename Device, typename Dtype>
-struct DeformableConv2DFunctor
-    : public DeformableConv2DFunctorBase<Device, Dtype> {
-  DeformableConv2DFunctor(const Tensor *_input_tensor,
-                          const Tensor *_filter_tensor,
-                          const Tensor *_bias_tensor,
-                          const Tensor *_offset_tensor,
-                          const Tensor *_mask_tensor,
-                          Tensor *_column_buffer_tensor, Tensor *_output_tensor,
-                          DeformableConv2DParams *_p);
+template <typename Device, typename T>
+struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
+  DeformableConv2DFunctor(const Tensor* _input_tensor,
+                          const Tensor* _filter_tensor,
+                          const Tensor* _bias_tensor,
+                          const Tensor* _offset_tensor,
+                          const Tensor* _mask_tensor,
+                          Tensor* _column_buffer_tensor, Tensor* _output_tensor,
+                          DeformableConv2DParams* _p);
 
   Status operator()(OpKernelContext* context);
 
   Tensor output_tensor;
 };
 
-template <typename Device, typename Dtype>
+template <typename Device, typename T>
 struct DeformableConv2DGradFunctor
-    : public DeformableConv2DFunctorBase<Device, Dtype> {
+    : public DeformableConv2DFunctorBase<Device, T> {
   DeformableConv2DGradFunctor(
       const Tensor* _input_tensor, const Tensor* _filter_tensor,
       const Tensor* _bias_tensor, const Tensor* _offset_tensor,
