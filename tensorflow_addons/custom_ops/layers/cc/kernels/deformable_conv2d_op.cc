@@ -98,7 +98,7 @@ struct DeformableConv2DFunctor<CPUDevice, T>
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
       LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                              false, false, bcast, true, &out);
+                                              false, false, bcast, &out);
     }
 
     Tensor output_tensor_reshaped(output_tensor.dtype());
@@ -229,7 +229,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
       LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                              false, true, bcast, true, &out);
+                                              false, true, bcast, &out);
 
       OP_REQUIRES_OK(context, tensor_array::AddToTensor<CPUDevice, T>(
                                   context, &filter_grad_tensor,
@@ -261,7 +261,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
       LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                              true, false, bcast, true, &out);
+                                              true, false, bcast, &out);
 
       DeformableCol2ImForOffsetAndMask(b);
 
