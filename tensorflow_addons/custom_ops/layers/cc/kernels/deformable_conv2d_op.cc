@@ -83,26 +83,24 @@ struct DeformableConv2DFunctor<CPUDevice, T>
     Tensor output_tmp_tensor_reshaped(output_tmp_tensor.dtype());
     CHECK(output_tmp_tensor_reshaped.CopyFrom(
         output_tmp_tensor,
-        TensorShape({p.batches, p.weight_groups, 1, rows, cols})));
+        TensorShape({p.batches, p.weight_groups, rows, cols})));
 
     Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
-        column_buffer_tensor, TensorShape({p.weight_groups, 1, elems, cols})));
+        column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
     for (auto b = 0; b < p.batches; b++) {
       this->DeformableIm2Col(b);
 
-      for (auto g = 0; g < p.weight_groups; g++) {
-        auto lhs = filter_tensor.SubSlice(g);
-        auto rhs = column_buffer_tensor_reshaped.SubSlice(g);
-        auto out = output_tmp_tensor_reshaped.SubSlice(b).SubSlice(g);
+      auto lhs = filter_tensor;
+      auto rhs = column_buffer_tensor_reshaped;
+      auto out = output_tmp_tensor_reshaped.SubSlice(b);
 
-        MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
+      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
-        // FIXME: TF2.3でargsが変わってる
-        LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                                bcast, &out);
-      }
+      // FIXME: TF2.3でargsが変わってる
+      LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
+                                              bcast, &out);
     }
 
     Tensor output_tensor_reshaped(output_tensor.dtype());
@@ -165,7 +163,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
                                      _input_grad_tensor->shape()));
     CHECK(filter_grad_tensor.CopyFrom(
         *_filter_grad_tensor,
-        TensorShape({p.weight_groups, 1, p.output_channels / p.weight_groups,
+        TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
                      p.filter_channels * p.filter_rows * p.filter_cols})));
     CHECK(bias_grad_tensor.CopyFrom(*_bias_grad_tensor,
                                     _bias_grad_tensor->shape()));
@@ -209,7 +207,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
     CHECK(output_grad_tensor_reshaped.CopyFrom(
         output_grad_tensor,
-        TensorShape({p.batches, p.weight_groups, 1, rows, elems})));
+        TensorShape({p.batches, p.weight_groups, rows, elems})));
 
     Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
@@ -218,7 +216,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     Tensor column_buffer_tensor_transposed;
     OP_REQUIRES_OK(context, context->allocate_temp(
                                 DataTypeToEnum<T>::value,
-                                TensorShape({p.weight_groups, 1, cols, elems}),
+                                TensorShape({p.weight_groups, cols, elems}),
                                 &column_buffer_tensor_transposed));
 
     for (auto b = 0; b < p.batches; b++) {
@@ -226,19 +224,18 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
 
       OP_REQUIRES_OK(
           context, DoTranspose(context->device(), column_buffer_tensor_reshaped,
-                               {0, 1, 3, 2}, &column_buffer_tensor_transposed));
+                               {0, 2, 1}, &column_buffer_tensor_transposed));
 
-      for (auto g = 0; g < p.weight_groups; g++) {
-        auto lhs = output_grad_tensor_reshaped.SubSlice(b).SubSlice(g);
-        auto rhs = column_buffer_tensor_transposed.SubSlice(g);
-        auto out = filter_grad_tensor.SubSlice(g);
+      // FIXME: !!!!!
+      auto lhs = output_grad_tensor_reshaped.SubSlice(b);
+      auto rhs = column_buffer_tensor_transposed;
+      auto out = filter_grad_tensor;
 
-        MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
+      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
-        // FIXME: TF2.3でargsが変わってる
-        LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                                bcast, &out);
-      }
+      // FIXME: TF2.3でargsが変わってる
+      LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
+                                              bcast, &out);
     }
   }
 
@@ -252,33 +249,31 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
     CHECK(output_grad_tensor_reshaped.CopyFrom(
         output_grad_tensor,
-        TensorShape({p.batches, p.weight_groups, 1, elems, cols})));
+        TensorShape({p.batches, p.weight_groups, elems, cols})));
 
     Tensor filter_tensor_transposed;
     OP_REQUIRES_OK(context, context->allocate_temp(
                                 DataTypeToEnum<T>::value,
-                                TensorShape({p.weight_groups, 1, cols, elems}),
+                                TensorShape({p.weight_groups, cols, elems}),
                                 &filter_tensor_transposed));
     OP_REQUIRES_OK(context,
-                   DoTranspose(context->device(), filter_tensor, {0, 1, 3, 2},
+                   DoTranspose(context->device(), filter_tensor, {0, 2, 1},
                                &filter_tensor_transposed));
 
     Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
-        column_buffer_tensor, TensorShape({p.weight_groups, 1, elems, cols})));
+        column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
     for (auto b = 0; b < p.batches; b++) {
-      for (int g = 0; g < p.weight_groups; g++) {
-        auto lhs = filter_tensor_transposed.SubSlice(g);
-        auto rhs = output_grad_tensor_reshaped.SubSlice(b).SubSlice(g);
-        auto out = column_buffer_tensor_reshaped.SubSlice(g);
+      auto lhs = filter_tensor_transposed;
+      auto rhs = output_grad_tensor_reshaped.SubSlice(b);
+      auto out = column_buffer_tensor_reshaped;
 
-        MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
+      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
-        // FIXME: TF2.3でargsが変わってる
-        LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                                bcast, &out);
-      }
+      // FIXME: TF2.3でargsが変わってる
+      LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
+                                              bcast, &out);
 
       DeformableCol2ImForOffsetAndMask(b);
 

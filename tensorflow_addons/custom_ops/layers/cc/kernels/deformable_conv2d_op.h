@@ -74,7 +74,7 @@ struct DeformableConv2DFunctorBase {
                      p.input_cols})));
     CHECK(filter_tensor.CopyFrom(
         *_filter_tensor,
-        TensorShape({p.weight_groups, 1, p.output_channels / p.weight_groups,
+        TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
                      p.filter_channels * p.filter_rows * p.filter_cols})));
     CHECK(bias_tensor.CopyFrom(*_bias_tensor, bias_tensor.shape()));
 
