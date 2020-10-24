@@ -21,8 +21,6 @@
 
 namespace tensorflow {
 namespace addons {
-using Shape4D = Eigen::array<Eigen::DenseIndex, 4>;
-
 static const int kMaxParallelImgs = 32;
 
 struct DeformableConv2DParams {
