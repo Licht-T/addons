@@ -27,6 +27,7 @@
 #include "tensorflow/core/kernels/aggregate_ops.h"
 #include "tensorflow/core/kernels/batch_matmul_op_impl.h"
 #include "tensorflow/core/kernels/tensor_array.h"
+#include "tensorflow/core/kernels/fill_functor.h"
 #include "tensorflow/core/kernels/transpose_functor.h"
 
 namespace tensorflow {
@@ -63,8 +64,8 @@ struct DeformableConv2DFunctor<CPUDevice, T>
   }
 
   Status operator()(OpKernelContext *context) {
-    TF_RETURN_IF_ERROR(
-        tensor_array::TensorSetZero<CPUDevice, T>(context, &output_tensor));
+    ::tensorflow::functor::SetZeroFunctor<CPUDevice, T> setZero;
+    setZero(context->eigen_device<CPUDevice>(), output_tensor.flat<T>());
 
     // input_channels * filter_rows * filter_cols / weight_groups ==
     // filter_channels * filter_rows * filter_cols
@@ -173,12 +174,10 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
   }
 
   Status operator()(OpKernelContext *context) {
-    TF_RETURN_IF_ERROR(
-        tensor_array::TensorSetZero<CPUDevice, T>(context, &input_grad_tensor));
-    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, T>(
-        context, &filter_grad_tensor));
-    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, T>(
-        context, &column_buffer_tensor));
+    ::tensorflow::functor::SetZeroFunctor<CPUDevice, T> setZero;
+    setZero(context->eigen_device<CPUDevice>(), input_grad_tensor.flat<T>());
+    setZero(context->eigen_device<CPUDevice>(), filter_grad_tensor.flat<T>());
+    setZero(context->eigen_device<CPUDevice>(), column_buffer_tensor.template flat<T>());
 
     ComputeInputOffsetMaskGrad(context);
 
