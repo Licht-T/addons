@@ -26,8 +26,8 @@
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/kernels/aggregate_ops.h"
 #include "tensorflow/core/kernels/batch_matmul_op_impl.h"
-#include "tensorflow/core/kernels/tensor_array.h"
 #include "tensorflow/core/kernels/fill_functor.h"
+#include "tensorflow/core/kernels/tensor_array.h"
 #include "tensorflow/core/kernels/transpose_functor.h"
 
 namespace tensorflow {
@@ -107,8 +107,9 @@ struct DeformableConv2DFunctor<CPUDevice, T>
         output_tensor,
         TensorShape({p.batches, p.parallel_imgs, p.output_channels,
                      p.output_rows, p.output_cols})));
-    TF_RETURN_IF_ERROR(DoTranspose(context->device(), output_tmp_tensor,
-                                   {0, 2, 1, 3, 4}, &output_tensor_reshaped));
+    TF_RETURN_IF_ERROR(DoTranspose(context->eigen_device<CPUDevice>(),
+                                   output_tmp_tensor, {0, 2, 1, 3, 4},
+                                   &output_tensor_reshaped));
 
     if (p.use_bias) {
       Eigen::DSizes<int32, 4> four_dims(1, p.output_channels, 1, 1);
@@ -177,7 +178,8 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     ::tensorflow::functor::SetZeroFunctor<CPUDevice, T> setZero;
     setZero(context->eigen_device<CPUDevice>(), input_grad_tensor.flat<T>());
     setZero(context->eigen_device<CPUDevice>(), filter_grad_tensor.flat<T>());
-    setZero(context->eigen_device<CPUDevice>(), column_buffer_tensor.template flat<T>());
+    setZero(context->eigen_device<CPUDevice>(),
+            column_buffer_tensor.template flat<T>());
 
     ComputeInputOffsetMaskGrad(context);
 
@@ -712,9 +714,10 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
                    context->allocate_temp(DataTypeToEnum<T>::value,
                                           output_grad_tensor_transposed_shape,
                                           &output_grad_tensor_transposed));
-    OP_REQUIRES_OK(
-        context, DoTranspose(context->device(), output_grad_tensor_reshaped,
-                             {0, 2, 1, 3, 4}, &output_grad_tensor_transposed));
+    OP_REQUIRES_OK(context,
+                   DoTranspose(context->eigen_device<CPUDevice>(),
+                               output_grad_tensor_reshaped, {0, 2, 1, 3, 4},
+                               &output_grad_tensor_transposed));
 
     TensorShape output_shape =
         ShapeFromFormat(data_format, p.input_batches, p.output_rows,
