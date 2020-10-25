@@ -47,29 +47,7 @@ struct SetZeroFunctor<GPUDevice, T> {
 };
 
 template <typename T>
-struct DeformableConv2DFunctorBase<CPUDevice, T> {
-  DeformableConv2DFunctorBase(const Tensor *_input_tensor,
-                              const Tensor *_filter_tensor,
-                              const Tensor *_bias_tensor,
-                              const Tensor *_offset_tensor,
-                              const Tensor *_mask_tensor,
-                              Tensor *_column_buffer_tensor,
-                              DeformableConv2DParams *_p);
-
-  virtual Status operator()(OpKernelContext *context) = 0;
-
-  T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x);
-
-  void DeformableIm2Col(int32 b);
-
-  Tensor input_tensor;
-  Tensor filter_tensor;
-  Tensor bias_tensor;
-  Tensor offset_tensor;
-  Tensor mask_tensor;
-  Tensor column_buffer_tensor;
-  DeformableConv2DParams p;
-};
+struct DeformableConv2DFunctorBase<CPUDevice, T>;
 
 template <typename T>
 void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(int32 b) {
