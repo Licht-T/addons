@@ -23,46 +23,12 @@
 
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/kernel_shape_util.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/kernels/aggregate_ops.h"
-#include "tensorflow/core/kernels/batch_matmul_op_impl.h"
 
 namespace tensorflow {
 namespace addons {
 
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
-
-template <typename Device, typename T, int NDIMS>
-void TransposeUsingEigen(const Device &d, const Tensor &in,
-                         const gtl::ArraySlice<int32> perm, Tensor *out) {
-  Eigen::array<int, NDIMS> p;
-  for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
-  auto x = typename TTypes<T, NDIMS>::ConstTensor(
-      reinterpret_cast<const T *>(in.tensor_data().data()),
-      in.shape().AsEigenDSizes<NDIMS>());
-  auto y = typename TTypes<T, NDIMS>::Tensor(
-      reinterpret_cast<T *>(const_cast<char *>(out->tensor_data().data())),
-      out->shape().AsEigenDSizes<NDIMS>());
-
-  y.device(d) = x.shuffle(p);
-}
-
-template <typename Device, typename T>
-Status TensorSetZero(OpKernelContext *ctx, Tensor *value) {
-  functor::SetZeroFunctor<Device, T> set_zero_functor;
-  set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>());
-  return Status::OK();
-}
-
-template <typename Device, typename T>
-Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
-                   const Tensor *add) {
-  ::tensorflow::functor::Add2EigenImpl<Device, T>::Compute(
-      ctx->template eigen_device<Device>(), sum->flat<T>(), current->flat<T>(),
-      add->flat<T>());
-  return Status::OK();
-}
 
 namespace functor {
 
@@ -81,103 +47,91 @@ struct SetZeroFunctor<GPUDevice, T> {
 };
 
 template <typename T>
-struct DeformableConv2DFunctor<CPUDevice, T>
-    : public DeformableConv2DFunctorBase<CPUDevice, T> {
-  using DeformableConv2DFunctorBase<CPUDevice, T>::input_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::filter_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::bias_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::offset_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::mask_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::column_buffer_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::p;
+struct DeformableConv2DFunctorBase<CPUDevice, T> {
+  DeformableConv2DFunctorBase(const Tensor *_input_tensor,
+                              const Tensor *_filter_tensor,
+                              const Tensor *_bias_tensor,
+                              const Tensor *_offset_tensor,
+                              const Tensor *_mask_tensor,
+                              Tensor *_column_buffer_tensor,
+                              DeformableConv2DParams *_p);
 
-  DeformableConv2DFunctor(const Tensor *_input_tensor,
-                          const Tensor *_filter_tensor,
-                          const Tensor *_bias_tensor,
-                          const Tensor *_offset_tensor,
-                          const Tensor *_mask_tensor,
-                          Tensor *_column_buffer_tensor, Tensor *_output_tensor,
-                          DeformableConv2DParams *_p)
-      : DeformableConv2DFunctorBase<CPUDevice, T>(
-            _input_tensor, _filter_tensor, _bias_tensor, _offset_tensor,
-            _mask_tensor, _column_buffer_tensor, _p),
-        output_tensor(_output_tensor->dtype()) {
-    CHECK(output_tensor.CopyFrom(*_output_tensor, _output_tensor->shape()));
-  }
+  virtual Status operator()(OpKernelContext *context) = 0;
 
-  Status operator()(OpKernelContext *context) {
-    TF_RETURN_IF_ERROR(TensorSetZero<CPUDevice, T>(context, &output_tensor));
+  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x);
 
-    // input_channels * filter_rows * filter_cols / weight_groups ==
-    // filter_channels * filter_rows * filter_cols
-    const auto elems = p.filter_channels * p.filter_rows * p.filter_cols;
-    const auto rows = p.output_channels / p.weight_groups;
-    const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
+  void DeformableIm2Col(int32 b);
 
-    Tensor output_tmp_tensor;
-    TF_RETURN_IF_ERROR(context->allocate_temp(
-        DataTypeToEnum<T>::value,
-        TensorShape({p.batches, p.output_channels, p.parallel_imgs,
-                     p.output_rows, p.output_cols}),
-        &output_tmp_tensor));
-
-    Tensor output_tmp_mtx_tensor;
-    TF_RETURN_IF_ERROR(context->allocate_temp(
-        DataTypeToEnum<T>::value, TensorShape({p.weight_groups, rows, cols}),
-        &output_tmp_mtx_tensor));
-
-    Tensor output_tmp_tensor_reshaped(output_tmp_tensor.dtype());
-    CHECK(output_tmp_tensor_reshaped.CopyFrom(
-        output_tmp_tensor,
-        TensorShape({p.batches, p.weight_groups, rows, cols})));
-
-    Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
-    CHECK(column_buffer_tensor_reshaped.CopyFrom(
-        column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
-
-    for (auto b = 0; b < p.batches; b++) {
-      this->DeformableIm2Col(b);
-
-      auto lhs = filter_tensor;
-      auto rhs = column_buffer_tensor_reshaped;
-      auto out = output_tmp_mtx_tensor;
-
-      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
-
-      LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                              false, false, bcast, &out);
-
-      TF_RETURN_IF_ERROR(
-          batch_util::CopyElementToSlice(out, &output_tmp_tensor_reshaped, b));
-    }
-
-    Tensor output_tensor_reshaped(output_tensor.dtype());
-    CHECK(output_tensor_reshaped.CopyFrom(
-        output_tensor,
-        TensorShape({p.batches, p.parallel_imgs, p.output_channels,
-                     p.output_rows, p.output_cols})));
-    TransposeUsingEigen<CPUDevice, T, 5>(context->eigen_device<CPUDevice>(),
-                                         output_tmp_tensor, {0, 2, 1, 3, 4},
-                                         &output_tensor_reshaped);
-
-    if (p.use_bias) {
-      Eigen::DSizes<int32, 4> four_dims(1, p.output_channels, 1, 1);
-      Eigen::DSizes<int32, 4> broadcast_dims(p.input_batches, 1, p.output_rows,
-                                             p.output_cols);
-      const CPUDevice &d = context->eigen_device<CPUDevice>();
-
-      auto bias_tensor_broadcasted =
-          bias_tensor.template tensor<T, 1>().reshape(four_dims).broadcast(
-              broadcast_dims);
-
-      output_tensor.tensor<T, 4>().device(d) += bias_tensor_broadcasted;
-    }
-
-    return Status::OK();
-  }
-
-  Tensor output_tensor;
+  Tensor input_tensor;
+  Tensor filter_tensor;
+  Tensor bias_tensor;
+  Tensor offset_tensor;
+  Tensor mask_tensor;
+  Tensor column_buffer_tensor;
+  DeformableConv2DParams p;
 };
+
+template <typename T>
+void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(int32 b) {
+  auto num_kernels =
+      p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;
+
+  const auto offset_eigen_tensor = offset_tensor.tensor<T, 8>();
+
+  const auto mask_eigen_tensor =
+      p.use_mask ? mask_tensor.tensor<T, 7>()
+                 : mask_tensor.shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
+
+  auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<T, 4>();
+
+  for (auto k = 0; k < num_kernels; k++) {
+    const auto current_output_col = k % p.output_cols;
+    const auto current_output_row = (k / p.output_cols) % p.output_rows;
+    const auto current_batch =
+        (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;
+    const auto current_input_channel =
+        k / (p.output_rows * p.output_cols * p.parallel_imgs);
+    const auto current_output_channel =
+        current_input_channel * p.filter_rows * p.filter_cols;
+
+    const auto current_actual_batch = b * p.parallel_imgs + current_batch;
+
+    const auto group_index =
+        current_input_channel / (p.input_channels / p.offset_groups);
+
+    auto column_buffer_tensor_channel = current_output_channel;
+    for (auto current_filter_row = 0; current_filter_row < p.filter_rows;
+         current_filter_row++) {
+      for (auto current_filter_col = 0; current_filter_col < p.filter_cols;
+           current_filter_col++) {
+        auto offset_h = offset_eigen_tensor(
+            b, current_batch, group_index, current_filter_row,
+            current_filter_col, 0, current_output_row, current_output_col);
+        auto offset_w = offset_eigen_tensor(
+            b, current_batch, group_index, current_filter_row,
+            current_filter_col, 1, current_output_row, current_output_col);
+
+        auto mask = p.use_mask ? mask_eigen_tensor(
+            b, current_batch, group_index,
+            current_filter_row, current_filter_col,
+            current_output_row, current_output_col)
+                               : T(1);
+
+        auto y = (current_output_row * p.stride_rows - p.padding_rows) +
+                 current_filter_row * p.dilation_rows + offset_h;
+        auto x = (current_output_col * p.stride_cols - p.padding_cols) +
+                 current_filter_col * p.dilation_cols + offset_w;
+
+        column_buffer_eigen_tensor(column_buffer_tensor_channel,
+                                   current_batch, current_output_row,
+                                   current_output_col) =
+            mask * BilinearInterpolate(b, current_actual_batch,
+                                       current_input_channel, y, x);
+        column_buffer_tensor_channel++;
+      }
+    }
+  }
+}
 
 template <typename T>
 struct DeformableConv2DGradFunctor<CPUDevice, T>
