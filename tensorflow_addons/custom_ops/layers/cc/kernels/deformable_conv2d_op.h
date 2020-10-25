@@ -17,9 +17,9 @@
 #define TENSORFLOW_ADDONS_LAYERS_KERNELS_DEFORMABLECONV2D_OP_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/util/tensor_format.h"
 #include "tensorflow/core/kernels/aggregate_ops.h"
 #include "tensorflow/core/kernels/batch_matmul_op_impl.h"
+#include "tensorflow/core/util/tensor_format.h"
 
 namespace tensorflow {
 namespace addons {
@@ -56,6 +56,26 @@ template <typename Device, typename T>
 struct SetZeroFunctor {
   void operator()(const Device &d, typename TTypes<T>::Flat out);
 };
+
+}  // namespace functor
+
+template <typename Device, typename T>
+Status TensorSetZero(OpKernelContext *ctx, Tensor *value) {
+  functor::SetZeroFunctor<Device, T> set_zero_functor;
+  set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>());
+  return Status::OK();
+}
+
+template <typename Device, typename T>
+Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
+                   const Tensor *add) {
+  ::tensorflow::functor::Add2EigenImpl<Device, T>::Compute(
+      ctx->template eigen_device<Device>(), sum->flat<T>(), current->flat<T>(),
+      add->flat<T>());
+  return Status::OK();
+}
+
+namespace functor {
 
 template <typename Device, typename T>
 struct DeformableConv2DFunctorBase {
@@ -107,7 +127,8 @@ struct DeformableConv2DFunctorBase {
 
   virtual Status operator()(OpKernelContext *context) = 0;
 
-  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x) {
+  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel,
+                                          T y, T x) {
     auto img = input_tensor.SubSlice(b)
                    .SubSlice(batch)
                    .SubSlice(channel)
@@ -233,7 +254,7 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
       LaunchBatchMatMul<Device, T>::Launch(context, lhs, rhs, false, false,
-                                              false, false, bcast, &out);
+                                           false, false, bcast, &out);
 
       TF_RETURN_IF_ERROR(
           batch_util::CopyElementToSlice(out, &output_tmp_tensor_reshaped, b));
@@ -245,8 +266,8 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
         TensorShape({p.batches, p.parallel_imgs, p.output_channels,
                      p.output_rows, p.output_cols})));
     TransposeUsingEigen<Device, T, 5>(context->eigen_device<Device>(),
-                                         output_tmp_tensor, {0, 2, 1, 3, 4},
-                                         &output_tensor_reshaped);
+                                      output_tmp_tensor, {0, 2, 1, 3, 4},
+                                      &output_tensor_reshaped);
 
     if (p.use_bias) {
       Eigen::DSizes<int32, 4> four_dims(1, p.output_channels, 1, 1);
@@ -305,23 +326,6 @@ void TransposeUsingEigen(const Device &d, const Tensor &in,
 
   y.device(d) = x.shuffle(p);
 }
-
-template <typename Device, typename T>
-Status TensorSetZero(OpKernelContext *ctx, Tensor *value) {
-  functor::SetZeroFunctor<Device, T> set_zero_functor;
-  set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>());
-  return Status::OK();
-}
-
-template <typename Device, typename T>
-Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
-                   const Tensor *add) {
-  ::tensorflow::functor::Add2EigenImpl<Device, T>::Compute(
-      ctx->template eigen_device<Device>(), sum->flat<T>(), current->flat<T>(),
-      add->flat<T>());
-  return Status::OK();
-}
-
 }  // namespace addons
 }  // namespace tensorflow
 
