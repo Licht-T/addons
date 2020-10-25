@@ -26,7 +26,6 @@
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/kernels/aggregate_ops.h"
 #include "tensorflow/core/kernels/batch_matmul_op_impl.h"
-#include "tensorflow/core/kernels/fill_functor.h"
 #include "tensorflow/core/kernels/tensor_array.h"
 #include "tensorflow/core/kernels/transpose_functor.h"
 
@@ -64,8 +63,8 @@ struct DeformableConv2DFunctor<CPUDevice, T>
   }
 
   Status operator()(OpKernelContext *context) {
-    ::tensorflow::functor::SetZeroFunctor<CPUDevice, T> setZero;
-    setZero(context->eigen_device<CPUDevice>(), output_tensor.flat<T>());
+    TF_RETURN_IF_ERROR(
+        tensor_array::TensorSetZero<CPUDevice, T>(context, &output_tensor));
 
     // input_channels * filter_rows * filter_cols / weight_groups ==
     // filter_channels * filter_rows * filter_cols
@@ -183,11 +182,12 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
   }
 
   Status operator()(OpKernelContext *context) {
-    ::tensorflow::functor::SetZeroFunctor<CPUDevice, T> setZero;
-    setZero(context->eigen_device<CPUDevice>(), input_grad_tensor.flat<T>());
-    setZero(context->eigen_device<CPUDevice>(), filter_grad_tensor.flat<T>());
-    setZero(context->eigen_device<CPUDevice>(),
-            column_buffer_tensor.template flat<T>());
+    TF_RETURN_IF_ERROR(
+        tensor_array::TensorSetZero<CPUDevice, T>(context, &input_grad_tensor));
+    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, T>(
+        context, &filter_grad_tensor));
+    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, T>(
+        context, &column_buffer_tensor));
 
     ComputeInputOffsetMaskGrad(context);
 
@@ -208,9 +208,9 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
   void ComputeFilterGrad(OpKernelContext *context) {
     // input_channels * filter_rows * filter_cols / weight_groups ==
     // filter_channels * filter_rows * filter_cols
-    const auto elems = p.filter_channels * p.filter_rows * p.filter_cols;
+    const auto cols = p.filter_channels * p.filter_rows * p.filter_cols;
     const auto rows = p.output_channels / p.weight_groups;
-    const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
+    const auto elems = p.parallel_imgs * p.output_rows * p.output_cols;
 
     Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
     CHECK(output_grad_tensor_reshaped.CopyFrom(
