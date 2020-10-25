@@ -58,7 +58,7 @@ struct DeformableConv2DFunctorBase<CPUDevice, T> {
 
   virtual Status operator()(OpKernelContext *context) = 0;
 
-  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x);
+  T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x);
 
   void DeformableIm2Col(int32 b);
 

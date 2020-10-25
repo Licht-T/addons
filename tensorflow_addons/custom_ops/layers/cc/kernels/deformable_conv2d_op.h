@@ -142,7 +142,7 @@ struct DeformableConv2DFunctorBase {
 
   virtual Status operator()(OpKernelContext *context) = 0;
 
-  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel,
+  T BilinearInterpolate(int32 b, int32 batch, int32 channel,
                                           T y, T x) {
     auto img = input_tensor.SubSlice(b)
                    .SubSlice(batch)
