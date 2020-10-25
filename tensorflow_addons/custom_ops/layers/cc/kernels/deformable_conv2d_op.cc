@@ -101,8 +101,9 @@ struct SetZeroFunctor<GPUDevice, T> {
           column_buffer_eigen_tensor(column_buffer_tensor_channel,             \
                                      current_batch, current_output_row,        \
                                      current_output_col) =                     \
-              mask * BilinearInterpolate(b, current_actual_batch,              \
-                                         current_input_channel, y, x);         \
+              mask * BilinearInterpolate<T>(input_tensor.tensor<T, 5>(), b,    \
+                                            current_actual_batch,              \
+                                            current_input_channel, y, x, p);   \
           column_buffer_tensor_channel++;                                      \
         }                                                                      \
       }                                                                        \
@@ -212,9 +213,11 @@ TF_CALL_double(IM2COL);
         offset_grad_value += mask * weight * filter_data;                      \
                                                                                \
         if (is_y_direction) {                                                  \
-          mask_grad_value += filter_data * this->BilinearInterpolate(          \
-                                               b, current_actual_batch,        \
-                                               selected_input_channel, y, x);  \
+          mask_grad_value +=                                                   \
+              filter_data *                                                    \
+              BilinearInterpolate<T>(input_tensor.tensor<T, 5>(), b,           \
+                                     current_actual_batch,                     \
+                                     selected_input_channel, y, x, p);         \
         }                                                                      \
       }                                                                        \
                                                                                \

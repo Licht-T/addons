@@ -92,6 +92,55 @@ void TransposeUsingEigen(const Device &d, const Tensor &in,
 
 namespace functor {
 
+template <typename T>
+EIGEN_DEVICE_FUNC T BilinearInterpolate(typename TTypes<T, 5>::ConstTensor img,
+                                        int32 b, int32 batch, int32 channel,
+                                        T y, T x, DeformableConv2DParams p) {
+  auto max_height = p.input_rows;
+  auto max_width = p.input_cols;
+
+  if (y <= -1 || max_height <= y || x <= -1 || max_width <= x) {
+    return T(0);
+  }
+
+  int y_low = floor(y);
+  int x_low = floor(x);
+  int y_high = y_low + 1;
+  int w_high = x_low + 1;
+
+  auto v1 = T(0);
+  if (y_low >= 0 && x_low >= 0) {
+    v1 = img(b, batch, channel, y_low, x_low);
+  }
+
+  auto v2 = T(0);
+  if (y_low >= 0 && w_high <= max_width - 1) {
+    v2 = img(b, batch, channel, y_low, w_high);
+  }
+
+  auto v3 = T(0);
+  if (y_high <= max_height - 1 && x_low >= 0) {
+    v3 = img(b, batch, channel, y_high, x_low);
+  }
+
+  auto v4 = T(0);
+  if (y_high <= max_height - 1 && w_high <= max_width - 1) {
+    v4 = img(b, batch, channel, y_high, w_high);
+  }
+
+  auto lh = y - y_low;
+  auto lw = x - x_low;
+  auto hh = 1 - lh;
+  auto hw = 1 - lw;
+
+  auto w1 = hh * hw;
+  auto w2 = hh * lw;
+  auto w3 = lh * hw;
+  auto w4 = lh * lw;
+
+  return w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4;
+}
+
 template <typename Device, typename T>
 struct DeformableConv2DFunctorBase {
   DeformableConv2DFunctorBase(const Tensor *_input_tensor,
@@ -141,59 +190,6 @@ struct DeformableConv2DFunctorBase {
   }
 
   virtual Status operator()(OpKernelContext *context) = 0;
-
-  // FIXME: staticにするか、外に分離
-  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel,
-                                          T y, T x) {
-    auto img = input_tensor.SubSlice(b)
-                   .SubSlice(batch)
-                   .SubSlice(channel)
-                   .unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
-
-    auto max_height = img.dimension(0);
-    auto max_width = img.dimension(1);
-
-    if (y <= -1 || max_height <= y || x <= -1 || max_width <= x) {
-      return T(0);
-    }
-
-    int y_low = floor(y);
-    int x_low = floor(x);
-    int y_high = y_low + 1;
-    int w_high = x_low + 1;
-
-    auto v1 = T(0);
-    if (y_low >= 0 && x_low >= 0) {
-      v1 = img(y_low, x_low);
-    }
-
-    auto v2 = T(0);
-    if (y_low >= 0 && w_high <= max_width - 1) {
-      v2 = img(y_low, w_high);
-    }
-
-    auto v3 = T(0);
-    if (y_high <= max_height - 1 && x_low >= 0) {
-      v3 = img(y_high, x_low);
-    }
-
-    auto v4 = T(0);
-    if (y_high <= max_height - 1 && w_high <= max_width - 1) {
-      v4 = img(y_high, w_high);
-    }
-
-    auto lh = y - y_low;
-    auto lw = x - x_low;
-    auto hh = 1 - lh;
-    auto hw = 1 - lw;
-
-    auto w1 = hh * hw;
-    auto w2 = hh * lw;
-    auto w3 = lh * hw;
-    auto w4 = lh * lw;
-
-    return w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4;
-  }
 
   void DeformableIm2Col(int32 b);
 
