@@ -82,8 +82,7 @@ struct DeformableConv2DFunctor<CPUDevice, T>
 
     Tensor output_tmp_mtx_tensor;
     TF_RETURN_IF_ERROR(context->allocate_temp(
-        DataTypeToEnum<T>::value,
-        TensorShape({p.weight_groups, rows, cols}),
+        DataTypeToEnum<T>::value, TensorShape({p.weight_groups, rows, cols}),
         &output_tmp_mtx_tensor));
 
     Tensor output_tmp_tensor_reshaped(output_tmp_tensor.dtype());
@@ -107,7 +106,8 @@ struct DeformableConv2DFunctor<CPUDevice, T>
       LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
                                               false, false, bcast, &out);
 
-      TF_RETURN_IF_ERROR(batch_util::CopyElementToSlice(out, &output_tmp_tensor_reshaped, b));
+      TF_RETURN_IF_ERROR(
+          batch_util::CopyElementToSlice(out, &output_tmp_tensor_reshaped, b));
     }
 
     Tensor output_tensor_reshaped(output_tensor.dtype());
@@ -221,19 +221,28 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
         column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
-    Tensor matmul_tmp_tensor;
+    Tensor matmul_lhs_tmp_tensor;
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<T>::value,
+                                TensorShape({p.weight_groups, rows, elems}),
+                                &matmul_lhs_tmp_tensor));
+
+    Tensor matmul_out_tmp_tensor;
     OP_REQUIRES_OK(context, context->allocate_temp(
                                 DataTypeToEnum<T>::value,
                                 TensorShape({p.weight_groups, rows, cols}),
-                                &matmul_tmp_tensor));
+                                &matmul_out_tmp_tensor));
 
     for (auto b = 0; b < p.batches; b++) {
       this->DeformableIm2Col(b);
 
       // FIXME: !!!!!
-      auto lhs = output_grad_tensor_reshaped.SubSlice(b);
+      auto lhs = matmul_lhs_tmp_tensor;
       auto rhs = column_buffer_tensor_reshaped;
-      auto out = matmul_tmp_tensor;
+      auto out = matmul_out_tmp_tensor;
+
+      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
+                                  output_grad_tensor_reshaped, &lhs, b));
 
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
@@ -260,12 +269,21 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
 
     Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
     CHECK(column_buffer_tensor_reshaped.CopyFrom(
-        column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
+        column_buffer_tensor, TensorShape({p.weight_groups, rows, cols})));
+
+    Tensor matmul_rhs_tmp_tensor;
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<T>::value,
+                                TensorShape({p.weight_groups, elems, cols}),
+                                &matmul_rhs_tmp_tensor));
 
     for (auto b = 0; b < p.batches; b++) {
       auto lhs = filter_tensor;
-      auto rhs = output_grad_tensor_reshaped.SubSlice(b);
+      auto rhs = matmul_rhs_tmp_tensor;
       auto out = column_buffer_tensor_reshaped;
+
+      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
+                                  output_grad_tensor_reshaped, &rhs, b));
 
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
@@ -473,10 +491,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
 
   T GetCoordinateWeight(int32 b, int32 batch, int32 channel, T y, T x,
                         bool is_y_direction) {
-    const auto img = input_tensor.SubSlice(b)
-                         .SubSlice(batch)
-                         .SubSlice(channel)
-                         .template unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
+    const auto img =
+        input_tensor.SubSlice(b)
+            .SubSlice(batch)
+            .SubSlice(channel)
+            .template unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
 
     const auto max_height = img.dimension(0);
     const auto max_width = img.dimension(1);
