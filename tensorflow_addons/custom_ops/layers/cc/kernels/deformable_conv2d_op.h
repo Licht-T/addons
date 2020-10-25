@@ -142,7 +142,8 @@ struct DeformableConv2DFunctorBase {
 
   virtual Status operator()(OpKernelContext *context) = 0;
 
-  T BilinearInterpolate(int32 b, int32 batch, int32 channel,
+  // FIXME: staticにするか、外に分離
+  EIGEN_DEVICE_FUNC T BilinearInterpolate(int32 b, int32 batch, int32 channel,
                                           T y, T x) {
     auto img = input_tensor.SubSlice(b)
                    .SubSlice(batch)
@@ -285,6 +286,7 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
                                       &output_tensor_reshaped);
 
     if (p.use_bias) {
+      // FIXME: GPUで動くか確認
       Eigen::DSizes<int32, 4> four_dims(1, p.output_channels, 1, 1);
       Eigen::DSizes<int32, 4> broadcast_dims(p.input_batches, 1, p.output_rows,
                                              p.output_cols);
@@ -306,16 +308,215 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
 template <typename Device, typename T>
 struct DeformableConv2DGradFunctor
     : public DeformableConv2DFunctorBase<Device, T> {
+  using DeformableConv2DFunctorBase<Device, T>::input_tensor;
+  using DeformableConv2DFunctorBase<Device, T>::filter_tensor;
+  using DeformableConv2DFunctorBase<Device, T>::bias_tensor;
+  using DeformableConv2DFunctorBase<Device, T>::offset_tensor;
+  using DeformableConv2DFunctorBase<Device, T>::mask_tensor;
+  using DeformableConv2DFunctorBase<Device, T>::column_buffer_tensor;
+  using DeformableConv2DFunctorBase<Device, T>::p;
+
   DeformableConv2DGradFunctor(
       const Tensor *_input_tensor, const Tensor *_filter_tensor,
       const Tensor *_bias_tensor, const Tensor *_offset_tensor,
       const Tensor *_mask_tensor, Tensor *_output_grad_tensor,
-      Tensor *input_grad_tensor, Tensor *filter_grad_tensor,
-      Tensor *bias_grad_tensor, Tensor *offset_grad_tensor,
-      Tensor *mask_grad_tensor, Tensor *column_buffer_tensor,
-      DeformableConv2DParams *p);
+      Tensor *_input_grad_tensor, Tensor *_filter_grad_tensor,
+      Tensor *_bias_grad_tensor, Tensor *_offset_grad_tensor,
+      Tensor *_mask_grad_tensor, Tensor *_column_buffer_tensor,
+      DeformableConv2DParams *_p)
+      : DeformableConv2DFunctorBase<Device, T>(
+            _input_tensor, _filter_tensor, _bias_tensor, _offset_tensor,
+            _mask_tensor, _column_buffer_tensor, _p),
+        output_grad_tensor(_output_grad_tensor->dtype()),
+        input_grad_tensor(_input_grad_tensor->dtype()),
+        filter_grad_tensor(_filter_grad_tensor->dtype()),
+        bias_grad_tensor(_bias_grad_tensor->dtype()),
+        offset_grad_tensor(_offset_grad_tensor->dtype()),
+        mask_grad_tensor(_mask_grad_tensor->dtype()) {
+    CHECK(output_grad_tensor.CopyFrom(*_output_grad_tensor,
+                                      _output_grad_tensor->shape()));
+    CHECK(input_grad_tensor.CopyFrom(*_input_grad_tensor,
+                                     _input_grad_tensor->shape()));
+    CHECK(filter_grad_tensor.CopyFrom(
+        *_filter_grad_tensor,
+        TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
+                     p.filter_channels * p.filter_rows * p.filter_cols})));
+    CHECK(bias_grad_tensor.CopyFrom(*_bias_grad_tensor,
+                                    _bias_grad_tensor->shape()));
+    CHECK(offset_grad_tensor.CopyFrom(*_offset_grad_tensor,
+                                      _offset_grad_tensor->shape()));
+    CHECK(mask_grad_tensor.CopyFrom(*_mask_grad_tensor,
+                                    _mask_grad_tensor->shape()));
+  }
 
-  Status operator()(OpKernelContext *context);
+  Status operator()(OpKernelContext *context) {
+    TF_RETURN_IF_ERROR(TensorSetZero<Device, T>(context, &input_grad_tensor));
+    TF_RETURN_IF_ERROR(TensorSetZero<Device, T>(context, &filter_grad_tensor));
+    TF_RETURN_IF_ERROR(
+        TensorSetZero<Device, T>(context, &column_buffer_tensor));
+
+    ComputeInputOffsetMaskGrad(context);
+
+    ComputeFilterGrad(context);
+
+    if (p.use_bias) {
+      // FIXME: GPUで動くか確認
+      const auto output_grad_eigen_tensor = output_grad_tensor.tensor<T, 5>();
+
+      const Device &d = context->eigen_device<Device>();
+
+      bias_grad_tensor.tensor<T, 1>().device(d) =
+          output_grad_eigen_tensor.sum(Eigen::array<int, 4>({0, 2, 3, 4}));
+    }
+
+    return Status::OK();
+  }
+
+  void ComputeFilterGrad(OpKernelContext *context) {
+    // input_channels * filter_rows * filter_cols / weight_groups ==
+    // filter_channels * filter_rows * filter_cols
+    const auto cols = p.filter_channels * p.filter_rows * p.filter_cols;
+    const auto rows = p.output_channels / p.weight_groups;
+    const auto elems = p.parallel_imgs * p.output_rows * p.output_cols;
+
+    Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
+    CHECK(output_grad_tensor_reshaped.CopyFrom(
+        output_grad_tensor,
+        TensorShape({p.batches, p.weight_groups, rows, elems})));
+
+    Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
+    CHECK(column_buffer_tensor_reshaped.CopyFrom(
+        column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
+
+    Tensor matmul_lhs_tmp_tensor;
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<T>::value,
+                                TensorShape({p.weight_groups, rows, elems}),
+                                &matmul_lhs_tmp_tensor));
+
+    Tensor matmul_out_tmp_tensor;
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<T>::value,
+                                TensorShape({p.weight_groups, rows, cols}),
+                                &matmul_out_tmp_tensor));
+
+    for (auto b = 0; b < p.batches; b++) {
+      this->DeformableIm2Col(b);
+
+      // FIXME: !!!!!
+      auto lhs = matmul_lhs_tmp_tensor;
+      auto rhs = column_buffer_tensor_reshaped;
+      auto out = matmul_out_tmp_tensor;
+
+      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
+                                  output_grad_tensor_reshaped, &lhs, b));
+
+      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
+
+      LaunchBatchMatMul<Device, T>::Launch(context, lhs, rhs, false, false,
+                                           false, true, bcast, &out);
+
+      OP_REQUIRES_OK(context,
+                     AddToTensor<Device, T>(context, &filter_grad_tensor,
+                                            &filter_grad_tensor, &out));
+    }
+  }
+
+  void ComputeInputOffsetMaskGrad(OpKernelContext *context) {
+    // input_channels * filter_rows * filter_cols / weight_groups ==
+    // filter_channels * filter_rows * filter_cols
+    const auto rows = p.filter_channels * p.filter_rows * p.filter_cols;
+    const auto elems = p.output_channels / p.weight_groups;
+    const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
+
+    Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
+    CHECK(output_grad_tensor_reshaped.CopyFrom(
+        output_grad_tensor,
+        TensorShape({p.batches, p.weight_groups, elems, cols})));
+
+    Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
+    CHECK(column_buffer_tensor_reshaped.CopyFrom(
+        column_buffer_tensor, TensorShape({p.weight_groups, rows, cols})));
+
+    Tensor matmul_rhs_tmp_tensor;
+    OP_REQUIRES_OK(context, context->allocate_temp(
+                                DataTypeToEnum<T>::value,
+                                TensorShape({p.weight_groups, elems, cols}),
+                                &matmul_rhs_tmp_tensor));
+
+    for (auto b = 0; b < p.batches; b++) {
+      auto lhs = filter_tensor;
+      auto rhs = matmul_rhs_tmp_tensor;
+      auto out = column_buffer_tensor_reshaped;
+
+      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
+                                  output_grad_tensor_reshaped, &rhs, b));
+
+      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
+
+      LaunchBatchMatMul<Device, T>::Launch(context, lhs, rhs, false, false,
+                                           true, false, bcast, &out);
+
+      DeformableCol2ImForOffsetAndMask(b);
+
+      DeformableCol2ImForInput(b);
+    }
+  }
+
+  void DeformableCol2ImForOffsetAndMask(int32 b);
+
+  void DeformableCol2ImForInput(int32 b);
+
+  // FIXME: staticにするか、外に分離
+  EIGEN_DEVICE_FUNC T GetCoordinateWeight(int32 b, int32 batch, int32 channel,
+                                          T y, T x, bool is_y_direction) {
+    const auto img =
+        input_tensor.SubSlice(b)
+            .SubSlice(batch)
+            .SubSlice(channel)
+            .template unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
+
+    const auto max_height = img.dimension(0);
+    const auto max_width = img.dimension(1);
+
+    const int y_low = floor(y);
+    const int x_low = floor(x);
+    const int y_high = y_low + 1;
+    const int x_high = x_low + 1;
+
+    const bool valid_y_low = max_height > y_low && y_low >= 0;
+    const bool valid_y_high = max_height > y_high && y_high >= 0;
+    const bool valid_x_low = max_width > x_low && x_low >= 0;
+    const bool valid_x_high = max_width > x_high && x_high >= 0;
+
+    auto v_yx = T(0);
+    if (valid_y_low && valid_x_low) {
+      v_yx = img(y_low, x_low);
+    }
+
+    auto v_yX = T(0);
+    if (valid_y_low && valid_x_high) {
+      v_yX = img(y_low, x_high);
+    }
+
+    auto v_Yx = T(0);
+    if (valid_y_high && valid_x_low) {
+      v_Yx = img(y_high, x_low);
+    }
+
+    auto v_YX = T(0);
+    if (valid_y_high && valid_x_high) {
+      v_YX = img(y_high, x_high);
+    }
+
+    if (is_y_direction) {
+      const auto dx = x - x_low;
+      return (v_YX - v_yX) * dx + (v_Yx - v_yx) * (1 - dx);
+    } else {
+      const auto dy = y - y_low;
+      return (v_YX - v_Yx) * dy + (v_yX - v_yx) * (1 - dy);
+    }
+  }
 
   Tensor output_grad_tensor;
   Tensor input_grad_tensor;

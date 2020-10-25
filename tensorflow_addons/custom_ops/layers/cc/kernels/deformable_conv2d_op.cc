@@ -112,415 +112,216 @@ TF_CALL_float(IM2COL);
 TF_CALL_double(IM2COL);
 #undef IM2COL
 
-template <typename T>
-struct DeformableConv2DGradFunctor<CPUDevice, T>
-    : public DeformableConv2DFunctorBase<CPUDevice, T> {
-  using DeformableConv2DFunctorBase<CPUDevice, T>::input_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::filter_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::bias_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::offset_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::mask_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::column_buffer_tensor;
-  using DeformableConv2DFunctorBase<CPUDevice, T>::p;
-
-  DeformableConv2DGradFunctor(
-      const Tensor *_input_tensor, const Tensor *_filter_tensor,
-      const Tensor *_bias_tensor, const Tensor *_offset_tensor,
-      const Tensor *_mask_tensor, Tensor *_output_grad_tensor,
-      Tensor *_input_grad_tensor, Tensor *_filter_grad_tensor,
-      Tensor *_bias_grad_tensor, Tensor *_offset_grad_tensor,
-      Tensor *_mask_grad_tensor, Tensor *_column_buffer_tensor,
-      DeformableConv2DParams *_p)
-      : DeformableConv2DFunctorBase<CPUDevice, T>(
-            _input_tensor, _filter_tensor, _bias_tensor, _offset_tensor,
-            _mask_tensor, _column_buffer_tensor, _p),
-        output_grad_tensor(_output_grad_tensor->dtype()),
-        input_grad_tensor(_input_grad_tensor->dtype()),
-        filter_grad_tensor(_filter_grad_tensor->dtype()),
-        bias_grad_tensor(_bias_grad_tensor->dtype()),
-        offset_grad_tensor(_offset_grad_tensor->dtype()),
-        mask_grad_tensor(_mask_grad_tensor->dtype()) {
-    CHECK(output_grad_tensor.CopyFrom(*_output_grad_tensor,
-                                      _output_grad_tensor->shape()));
-    CHECK(input_grad_tensor.CopyFrom(*_input_grad_tensor,
-                                     _input_grad_tensor->shape()));
-    CHECK(filter_grad_tensor.CopyFrom(
-        *_filter_grad_tensor,
-        TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
-                     p.filter_channels * p.filter_rows * p.filter_cols})));
-    CHECK(bias_grad_tensor.CopyFrom(*_bias_grad_tensor,
-                                    _bias_grad_tensor->shape()));
-    CHECK(offset_grad_tensor.CopyFrom(*_offset_grad_tensor,
-                                      _offset_grad_tensor->shape()));
-    CHECK(mask_grad_tensor.CopyFrom(*_mask_grad_tensor,
-                                    _mask_grad_tensor->shape()));
+#define COL2IM_OFFSET_AND_MASK(T)                                              \
+  template <>                                                                  \
+  void                                                                         \
+  DeformableConv2DGradFunctor<CPUDevice, T>::DeformableCol2ImForOffsetAndMask( \
+      int32 b) {                                                               \
+    const auto num_kernels = p.output_rows * p.output_cols * 2 *               \
+                             p.filter_rows * p.filter_cols * p.offset_groups * \
+                             p.parallel_imgs;                                  \
+                                                                               \
+    const auto offset_eigen_tensor = offset_tensor.template tensor<T, 8>();    \
+                                                                               \
+    const auto mask_eigen_tensor =                                             \
+        p.use_mask ? mask_tensor.template tensor<T, 7>()                       \
+                   : mask_tensor.template shaped<T, 7>({0, 0, 0, 0, 0, 0, 0}); \
+                                                                               \
+    const auto column_buffer_eigen_tensor =                                    \
+        column_buffer_tensor.template shaped<T, 6>(                            \
+            {p.input_channels, p.filter_rows, p.filter_cols, p.parallel_imgs,  \
+             p.output_rows, p.output_cols});                                   \
+                                                                               \
+    auto offset_grad_eigen_tensor = offset_grad_tensor.tensor<T, 4>();         \
+    auto mask_grad_eigen_tensor = mask_grad_tensor.tensor<T, 4>();             \
+                                                                               \
+    for (auto k = 0; k < num_kernels; k++) {                                   \
+      auto offset_grad_value = T(0);                                           \
+      auto mask_grad_value = T(0);                                             \
+                                                                               \
+      const auto offset_channels =                                             \
+          2 * p.filter_rows * p.filter_cols * p.offset_groups;                 \
+                                                                               \
+      const auto offset_channel_step = p.filter_rows * p.filter_cols;          \
+                                                                               \
+      const auto current_output_col = k % p.output_cols;                       \
+      const auto current_output_row = (k / p.output_cols) % p.output_rows;     \
+      const auto current_filter_col =                                          \
+          (k / (2 * p.output_rows * p.output_cols)) % p.filter_cols;           \
+      const auto current_filter_row =                                          \
+          (k / (2 * p.output_rows * p.output_cols * p.filter_cols)) %          \
+          p.filter_rows;                                                       \
+      const auto current_offset_channel =                                      \
+          (k / (p.output_rows * p.output_cols)) % offset_channels;             \
+      const auto current_batch =                                               \
+          k / (p.output_rows * p.output_cols * offset_channels);               \
+                                                                               \
+      const auto current_actual_batch = b * p.parallel_imgs + current_batch;   \
+                                                                               \
+      const auto current_offset_group =                                        \
+          current_offset_channel / (2 * offset_channel_step);                  \
+                                                                               \
+      const auto channels_per_offset_group =                                   \
+          p.input_channels / p.offset_groups;                                  \
+      const auto offset_channel_diff =                                         \
+          current_offset_channel -                                             \
+          current_offset_group * 2 * offset_channel_step;                      \
+      const auto is_y_direction = offset_channel_diff % 2 == 0;                \
+                                                                               \
+      for (auto selected_offset_channel = (offset_channel_diff / 2);           \
+           selected_offset_channel <                                           \
+           channels_per_offset_group * offset_channel_step;                    \
+           selected_offset_channel += offset_channel_step) {                   \
+        const auto selected_filter_col =                                       \
+            selected_offset_channel % p.filter_cols;                           \
+        const auto selected_filter_row =                                       \
+            (selected_offset_channel / p.filter_cols) % p.filter_rows;         \
+        const auto input_channel_diff =                                        \
+            (selected_offset_channel / (p.filter_cols * p.filter_rows));       \
+                                                                               \
+        const auto offset_h = offset_eigen_tensor(                             \
+            b, current_batch, current_offset_group, selected_filter_row,       \
+            selected_filter_col, 0, current_output_row, current_output_col);   \
+        const auto offset_w = offset_eigen_tensor(                             \
+            b, current_batch, current_offset_group, selected_filter_row,       \
+            selected_filter_col, 1, current_output_row, current_output_col);   \
+        const auto mask =                                                      \
+            p.use_mask                                                         \
+                ? mask_eigen_tensor(b, current_batch, current_offset_group,    \
+                                    selected_filter_row, selected_filter_col,  \
+                                    current_output_row, current_output_col)    \
+                : T(1);                                                        \
+                                                                               \
+        const auto y = (current_output_row * p.stride_rows - p.padding_rows) + \
+                       selected_filter_row * p.dilation_rows + offset_h;       \
+        const auto x = (current_output_col * p.stride_cols - p.padding_cols) + \
+                       selected_filter_col * p.dilation_cols + offset_w;       \
+                                                                               \
+        const auto selected_input_channel =                                    \
+            input_channel_diff +                                               \
+            current_offset_group * channels_per_offset_group;                  \
+                                                                               \
+        const auto filter_data = column_buffer_eigen_tensor(                   \
+            selected_input_channel, selected_filter_row, selected_filter_col,  \
+            current_batch, current_output_row, current_output_col);            \
+                                                                               \
+        const auto weight =                                                    \
+            GetCoordinateWeight(b, current_actual_batch,                       \
+                                selected_input_channel, y, x, is_y_direction); \
+                                                                               \
+        offset_grad_value += mask * weight * filter_data;                      \
+                                                                               \
+        if (is_y_direction) {                                                  \
+          mask_grad_value += filter_data * this->BilinearInterpolate(          \
+                                               b, current_actual_batch,        \
+                                               selected_input_channel, y, x);  \
+        }                                                                      \
+      }                                                                        \
+                                                                               \
+      offset_grad_eigen_tensor(current_actual_batch, current_offset_channel,   \
+                               current_output_row, current_output_col) =       \
+          offset_grad_value;                                                   \
+                                                                               \
+      if (p.use_mask && is_y_direction) {                                      \
+        const auto current_mask_channel =                                      \
+            (current_offset_group * p.filter_rows + current_filter_row) *      \
+                p.filter_cols +                                                \
+            current_filter_col;                                                \
+                                                                               \
+        mask_grad_eigen_tensor(current_actual_batch, current_mask_channel,     \
+                               current_output_row, current_output_col) =       \
+            mask_grad_value;                                                   \
+      }                                                                        \
+    }                                                                          \
   }
+TF_CALL_float(COL2IM_OFFSET_AND_MASK);
+TF_CALL_double(COL2IM_OFFSET_AND_MASK);
+#undef COL2IM_OFFSET_AND_MASK
 
-  Status operator()(OpKernelContext *context) {
-    TF_RETURN_IF_ERROR(
-        TensorSetZero<CPUDevice, T>(context, &input_grad_tensor));
-    TF_RETURN_IF_ERROR(
-        TensorSetZero<CPUDevice, T>(context, &filter_grad_tensor));
-    TF_RETURN_IF_ERROR(
-        TensorSetZero<CPUDevice, T>(context, &column_buffer_tensor));
-
-    ComputeInputOffsetMaskGrad(context);
-
-    ComputeFilterGrad(context);
-
-    if (p.use_bias) {
-      const auto output_grad_eigen_tensor = output_grad_tensor.tensor<T, 5>();
-
-      const CPUDevice &d = context->eigen_device<CPUDevice>();
-
-      bias_grad_tensor.tensor<T, 1>().device(d) =
-          output_grad_eigen_tensor.sum(Eigen::array<int, 4>({0, 2, 3, 4}));
-    }
-
-    return Status::OK();
+#define COL2IM_INPUT(T)                                                        \
+  template <>                                                                  \
+  void DeformableConv2DGradFunctor<CPUDevice, T>::DeformableCol2ImForInput(    \
+      int32 b) {                                                               \
+    const auto num_kernels = p.input_channels * p.filter_rows *                \
+                             p.filter_cols * p.output_rows * p.output_cols *   \
+                             p.parallel_imgs;                                  \
+                                                                               \
+    const auto offset_eigen_tensor = offset_tensor.template tensor<T, 8>();    \
+                                                                               \
+    const auto mask_eigen_tensor =                                             \
+        p.use_mask ? mask_tensor.template tensor<T, 7>()                       \
+                   : mask_tensor.template shaped<T, 7>({0, 0, 0, 0, 0, 0, 0}); \
+                                                                               \
+    const auto column_buffer_tensor_flattened =                                \
+        column_buffer_tensor.template shaped<T, 1>({num_kernels});             \
+                                                                               \
+    auto input_grad_eigen_tensor = input_grad_tensor.tensor<T, 4>();           \
+                                                                               \
+    for (auto k = 0; k < num_kernels; k++) {                                   \
+      const auto current_output_col = k % p.output_cols;                       \
+      const auto current_output_row = (k / p.output_cols) % p.output_rows;     \
+      const auto current_batch =                                               \
+          (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;             \
+                                                                               \
+      const auto current_filter_col =                                          \
+          (k / (p.output_rows * p.output_cols * p.parallel_imgs)) %            \
+          p.filter_cols;                                                       \
+      const auto current_filter_row =                                          \
+          (k / (p.output_rows * p.output_cols * p.parallel_imgs *              \
+                p.filter_cols)) %                                              \
+          p.filter_rows;                                                       \
+      const auto current_channel =                                             \
+          k / (p.output_rows * p.output_cols * p.parallel_imgs *               \
+               p.filter_rows * p.filter_cols);                                 \
+                                                                               \
+      const auto current_offset_group =                                        \
+          current_channel / (p.input_channels / p.offset_groups);              \
+                                                                               \
+      const auto mask =                                                        \
+          p.use_mask                                                           \
+              ? mask_eigen_tensor(b, current_batch, current_offset_group,      \
+                                  current_filter_row, current_filter_col,      \
+                                  current_output_row, current_output_col)      \
+              : T(1);                                                          \
+                                                                               \
+      const auto offset_h = offset_eigen_tensor(                               \
+          b, current_batch, current_offset_group, current_filter_row,          \
+          current_filter_col, 0, current_output_row, current_output_col);      \
+      const auto offset_w = offset_eigen_tensor(                               \
+          b, current_batch, current_offset_group, current_filter_row,          \
+          current_filter_col, 1, current_output_row, current_output_col);      \
+                                                                               \
+      const auto y = (current_output_row * p.stride_rows - p.padding_rows) +   \
+                     current_filter_row * p.dilation_rows + offset_h;          \
+      const auto x = (current_output_col * p.stride_cols - p.padding_cols) +   \
+                     current_filter_col * p.dilation_cols + offset_w;          \
+                                                                               \
+      for (auto dy = -1; dy <= 1; dy++) {                                      \
+        for (auto dx = -1; dx <= 1; dx++) {                                    \
+          const auto current_input_row = int(y) + dy;                          \
+          const auto current_input_col = int(x) + dx;                          \
+                                                                               \
+          if (p.input_rows > current_input_row && current_input_row >= 0 &&    \
+              p.input_cols > current_input_col && current_input_col >= 0 &&    \
+              std::abs(y - current_input_row) < 1 &&                           \
+              std::abs(x - current_input_col) < 1) {                           \
+            const auto weight = (1.0 - std::abs(y - current_input_row)) *      \
+                                (1.0 - std::abs(x - current_input_col));       \
+                                                                               \
+            const auto current_actual_batch =                                  \
+                b * p.parallel_imgs + current_batch;                           \
+                                                                               \
+            input_grad_eigen_tensor(current_actual_batch, current_channel,     \
+                                    current_input_row, current_input_col) +=   \
+                mask * weight * column_buffer_tensor_flattened(k);             \
+          }                                                                    \
+        }                                                                      \
+      }                                                                        \
+    }                                                                          \
   }
-
-  void ComputeFilterGrad(OpKernelContext *context) {
-    // input_channels * filter_rows * filter_cols / weight_groups ==
-    // filter_channels * filter_rows * filter_cols
-    const auto cols = p.filter_channels * p.filter_rows * p.filter_cols;
-    const auto rows = p.output_channels / p.weight_groups;
-    const auto elems = p.parallel_imgs * p.output_rows * p.output_cols;
-
-    Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
-    CHECK(output_grad_tensor_reshaped.CopyFrom(
-        output_grad_tensor,
-        TensorShape({p.batches, p.weight_groups, rows, elems})));
-
-    Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
-    CHECK(column_buffer_tensor_reshaped.CopyFrom(
-        column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
-
-    Tensor matmul_lhs_tmp_tensor;
-    OP_REQUIRES_OK(context, context->allocate_temp(
-                                DataTypeToEnum<T>::value,
-                                TensorShape({p.weight_groups, rows, elems}),
-                                &matmul_lhs_tmp_tensor));
-
-    Tensor matmul_out_tmp_tensor;
-    OP_REQUIRES_OK(context, context->allocate_temp(
-                                DataTypeToEnum<T>::value,
-                                TensorShape({p.weight_groups, rows, cols}),
-                                &matmul_out_tmp_tensor));
-
-    for (auto b = 0; b < p.batches; b++) {
-      this->DeformableIm2Col(b);
-
-      // FIXME: !!!!!
-      auto lhs = matmul_lhs_tmp_tensor;
-      auto rhs = column_buffer_tensor_reshaped;
-      auto out = matmul_out_tmp_tensor;
-
-      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
-                                  output_grad_tensor_reshaped, &lhs, b));
-
-      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
-
-      LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                              false, true, bcast, &out);
-
-      OP_REQUIRES_OK(context,
-                     AddToTensor<CPUDevice, T>(context, &filter_grad_tensor,
-                                               &filter_grad_tensor, &out));
-    }
-  }
-
-  void ComputeInputOffsetMaskGrad(OpKernelContext *context) {
-    // input_channels * filter_rows * filter_cols / weight_groups ==
-    // filter_channels * filter_rows * filter_cols
-    const auto rows = p.filter_channels * p.filter_rows * p.filter_cols;
-    const auto elems = p.output_channels / p.weight_groups;
-    const auto cols = p.parallel_imgs * p.output_rows * p.output_cols;
-
-    Tensor output_grad_tensor_reshaped(output_grad_tensor.dtype());
-    CHECK(output_grad_tensor_reshaped.CopyFrom(
-        output_grad_tensor,
-        TensorShape({p.batches, p.weight_groups, elems, cols})));
-
-    Tensor column_buffer_tensor_reshaped(column_buffer_tensor.dtype());
-    CHECK(column_buffer_tensor_reshaped.CopyFrom(
-        column_buffer_tensor, TensorShape({p.weight_groups, rows, cols})));
-
-    Tensor matmul_rhs_tmp_tensor;
-    OP_REQUIRES_OK(context, context->allocate_temp(
-                                DataTypeToEnum<T>::value,
-                                TensorShape({p.weight_groups, elems, cols}),
-                                &matmul_rhs_tmp_tensor));
-
-    for (auto b = 0; b < p.batches; b++) {
-      auto lhs = filter_tensor;
-      auto rhs = matmul_rhs_tmp_tensor;
-      auto out = column_buffer_tensor_reshaped;
-
-      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
-                                  output_grad_tensor_reshaped, &rhs, b));
-
-      MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
-
-      LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
-                                              true, false, bcast, &out);
-
-      DeformableCol2ImForOffsetAndMask(b);
-
-      DeformableCol2ImForInput(b);
-    }
-  }
-
-  void DeformableCol2ImForOffsetAndMask(int32 b) {
-    const auto num_kernels = p.output_rows * p.output_cols * 2 * p.filter_rows *
-                             p.filter_cols * p.offset_groups * p.parallel_imgs;
-
-    const auto offset_eigen_tensor = offset_tensor.template tensor<T, 8>();
-
-    const auto mask_eigen_tensor =
-        p.use_mask ? mask_tensor.template tensor<T, 7>()
-                   : mask_tensor.template shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
-
-    const auto column_buffer_eigen_tensor =
-        column_buffer_tensor.template shaped<T, 6>(
-            {p.input_channels, p.filter_rows, p.filter_cols, p.parallel_imgs,
-             p.output_rows, p.output_cols});
-
-    auto offset_grad_eigen_tensor = offset_grad_tensor.tensor<T, 4>();
-    auto mask_grad_eigen_tensor = mask_grad_tensor.tensor<T, 4>();
-
-    for (auto k = 0; k < num_kernels; k++) {
-      auto offset_grad_value = T(0);
-      auto mask_grad_value = T(0);
-
-      const auto offset_channels =
-          2 * p.filter_rows * p.filter_cols * p.offset_groups;
-
-      const auto offset_channel_step = p.filter_rows * p.filter_cols;
-
-      const auto current_output_col = k % p.output_cols;
-      const auto current_output_row = (k / p.output_cols) % p.output_rows;
-      const auto current_filter_col =
-          (k / (2 * p.output_rows * p.output_cols)) % p.filter_cols;
-      const auto current_filter_row =
-          (k / (2 * p.output_rows * p.output_cols * p.filter_cols)) %
-          p.filter_rows;
-      const auto current_offset_channel =
-          (k / (p.output_rows * p.output_cols)) % offset_channels;
-      const auto current_batch =
-          k / (p.output_rows * p.output_cols * offset_channels);
-
-      const auto current_actual_batch = b * p.parallel_imgs + current_batch;
-
-      const auto current_offset_group =
-          current_offset_channel / (2 * offset_channel_step);
-
-      const auto channels_per_offset_group = p.input_channels / p.offset_groups;
-      const auto offset_channel_diff =
-          current_offset_channel -
-          current_offset_group * 2 * offset_channel_step;
-      const auto is_y_direction = offset_channel_diff % 2 == 0;
-
-      for (auto selected_offset_channel = (offset_channel_diff / 2);
-           selected_offset_channel <
-           channels_per_offset_group * offset_channel_step;
-           selected_offset_channel += offset_channel_step) {
-        const auto selected_filter_col =
-            selected_offset_channel % p.filter_cols;
-        const auto selected_filter_row =
-            (selected_offset_channel / p.filter_cols) % p.filter_rows;
-        const auto input_channel_diff =
-            (selected_offset_channel / (p.filter_cols * p.filter_rows));
-
-        const auto offset_h = offset_eigen_tensor(
-            b, current_batch, current_offset_group, selected_filter_row,
-            selected_filter_col, 0, current_output_row, current_output_col);
-        const auto offset_w = offset_eigen_tensor(
-            b, current_batch, current_offset_group, selected_filter_row,
-            selected_filter_col, 1, current_output_row, current_output_col);
-        const auto mask =
-            p.use_mask
-                ? mask_eigen_tensor(b, current_batch, current_offset_group,
-                                    selected_filter_row, selected_filter_col,
-                                    current_output_row, current_output_col)
-                : T(1);
-
-        const auto y = (current_output_row * p.stride_rows - p.padding_rows) +
-                       selected_filter_row * p.dilation_rows + offset_h;
-        const auto x = (current_output_col * p.stride_cols - p.padding_cols) +
-                       selected_filter_col * p.dilation_cols + offset_w;
-
-        const auto selected_input_channel =
-            input_channel_diff +
-            current_offset_group * channels_per_offset_group;
-
-        const auto filter_data = column_buffer_eigen_tensor(
-            selected_input_channel, selected_filter_row, selected_filter_col,
-            current_batch, current_output_row, current_output_col);
-
-        const auto weight =
-            GetCoordinateWeight(b, current_actual_batch, selected_input_channel,
-                                y, x, is_y_direction);
-
-        offset_grad_value += mask * weight * filter_data;
-
-        if (is_y_direction) {
-          mask_grad_value += filter_data * this->BilinearInterpolate(
-                                               b, current_actual_batch,
-                                               selected_input_channel, y, x);
-        }
-      }
-
-      offset_grad_eigen_tensor(current_actual_batch, current_offset_channel,
-                               current_output_row, current_output_col) =
-          offset_grad_value;
-
-      if (p.use_mask && is_y_direction) {
-        const auto current_mask_channel =
-            (current_offset_group * p.filter_rows + current_filter_row) *
-                p.filter_cols +
-            current_filter_col;
-
-        mask_grad_eigen_tensor(current_actual_batch, current_mask_channel,
-                               current_output_row, current_output_col) =
-            mask_grad_value;
-      }
-    }
-  }
-
-  void DeformableCol2ImForInput(int32 b) {
-    const auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
-                             p.output_rows * p.output_cols * p.parallel_imgs;
-
-    const auto offset_eigen_tensor = offset_tensor.template tensor<T, 8>();
-
-    const auto mask_eigen_tensor =
-        p.use_mask ? mask_tensor.template tensor<T, 7>()
-                   : mask_tensor.template shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
-
-    const auto column_buffer_tensor_flattened =
-        column_buffer_tensor.template shaped<T, 1>({num_kernels});
-
-    auto input_grad_eigen_tensor = input_grad_tensor.tensor<T, 4>();
-
-    for (auto k = 0; k < num_kernels; k++) {
-      const auto current_output_col = k % p.output_cols;
-      const auto current_output_row = (k / p.output_cols) % p.output_rows;
-      const auto current_batch =
-          (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;
-
-      const auto current_filter_col =
-          (k / (p.output_rows * p.output_cols * p.parallel_imgs)) %
-          p.filter_cols;
-      const auto current_filter_row = (k / (p.output_rows * p.output_cols *
-                                            p.parallel_imgs * p.filter_cols)) %
-                                      p.filter_rows;
-      const auto current_channel =
-          k / (p.output_rows * p.output_cols * p.parallel_imgs * p.filter_rows *
-               p.filter_cols);
-
-      const auto current_offset_group =
-          current_channel / (p.input_channels / p.offset_groups);
-
-      const auto mask =
-          p.use_mask ? mask_eigen_tensor(b, current_batch, current_offset_group,
-                                         current_filter_row, current_filter_col,
-                                         current_output_row, current_output_col)
-                     : T(1);
-
-      const auto offset_h = offset_eigen_tensor(
-          b, current_batch, current_offset_group, current_filter_row,
-          current_filter_col, 0, current_output_row, current_output_col);
-      const auto offset_w = offset_eigen_tensor(
-          b, current_batch, current_offset_group, current_filter_row,
-          current_filter_col, 1, current_output_row, current_output_col);
-
-      const auto y = (current_output_row * p.stride_rows - p.padding_rows) +
-                     current_filter_row * p.dilation_rows + offset_h;
-      const auto x = (current_output_col * p.stride_cols - p.padding_cols) +
-                     current_filter_col * p.dilation_cols + offset_w;
-
-      for (auto dy = -1; dy <= 1; dy++) {
-        for (auto dx = -1; dx <= 1; dx++) {
-          const auto current_input_row = int(y) + dy;
-          const auto current_input_col = int(x) + dx;
-
-          if (p.input_rows > current_input_row && current_input_row >= 0 &&
-              p.input_cols > current_input_col && current_input_col >= 0 &&
-              std::abs(y - current_input_row) < 1 &&
-              std::abs(x - current_input_col) < 1) {
-            const auto weight = (1.0 - std::abs(y - current_input_row)) *
-                                (1.0 - std::abs(x - current_input_col));
-
-            const auto current_actual_batch =
-                b * p.parallel_imgs + current_batch;
-
-            input_grad_eigen_tensor(current_actual_batch, current_channel,
-                                    current_input_row, current_input_col) +=
-                mask * weight * column_buffer_tensor_flattened(k);
-          }
-        }
-      }
-    }
-  }
-
-  T GetCoordinateWeight(int32 b, int32 batch, int32 channel, T y, T x,
-                        bool is_y_direction) {
-    const auto img =
-        input_tensor.SubSlice(b)
-            .SubSlice(batch)
-            .SubSlice(channel)
-            .template unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
-
-    const auto max_height = img.dimension(0);
-    const auto max_width = img.dimension(1);
-
-    const int y_low = floor(y);
-    const int x_low = floor(x);
-    const int y_high = y_low + 1;
-    const int x_high = x_low + 1;
-
-    const bool valid_y_low = max_height > y_low && y_low >= 0;
-    const bool valid_y_high = max_height > y_high && y_high >= 0;
-    const bool valid_x_low = max_width > x_low && x_low >= 0;
-    const bool valid_x_high = max_width > x_high && x_high >= 0;
-
-    auto v_yx = T(0);
-    if (valid_y_low && valid_x_low) {
-      v_yx = img(y_low, x_low);
-    }
-
-    auto v_yX = T(0);
-    if (valid_y_low && valid_x_high) {
-      v_yX = img(y_low, x_high);
-    }
-
-    auto v_Yx = T(0);
-    if (valid_y_high && valid_x_low) {
-      v_Yx = img(y_high, x_low);
-    }
-
-    auto v_YX = T(0);
-    if (valid_y_high && valid_x_high) {
-      v_YX = img(y_high, x_high);
-    }
-
-    if (is_y_direction) {
-      const auto dx = x - x_low;
-      return (v_YX - v_yX) * dx + (v_Yx - v_yx) * (1 - dx);
-    } else {
-      const auto dy = y - y_low;
-      return (v_YX - v_Yx) * dy + (v_yX - v_yx) * (1 - dy);
-    }
-  }
-
-  Tensor output_grad_tensor;
-  Tensor input_grad_tensor;
-  Tensor filter_grad_tensor;
-  Tensor bias_grad_tensor;
-  Tensor offset_grad_tensor;
-  Tensor mask_grad_tensor;
-};
+TF_CALL_float(COL2IM_INPUT);
+TF_CALL_double(COL2IM_INPUT);
+#undef COL2IM_INPUT
 
 }  // end namespace functor
 
