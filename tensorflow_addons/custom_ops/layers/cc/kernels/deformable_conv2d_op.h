@@ -51,6 +51,11 @@ struct DeformableConv2DParams {
 namespace functor {
 
 template <typename Device, typename T>
+struct SetZeroFunctor {
+  void operator()(const Device &d, typename TTypes<T>::Flat out);
+};
+
+template <typename Device, typename T>
 struct DeformableConv2DFunctorBase {
   DeformableConv2DFunctorBase(const Tensor* _input_tensor,
                               const Tensor* _filter_tensor,

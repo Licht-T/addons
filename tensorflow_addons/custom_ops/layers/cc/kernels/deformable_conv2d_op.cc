@@ -26,8 +26,6 @@
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/kernels/aggregate_ops.h"
 #include "tensorflow/core/kernels/batch_matmul_op_impl.h"
-#include "tensorflow/core/kernels/tensor_array.h"
-#include "tensorflow/core/kernels/transpose_functor.h"
 
 namespace tensorflow {
 namespace addons {
@@ -35,7 +33,52 @@ namespace addons {
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
 
+template <typename Device, typename T, int NDIMS>
+void TransposeUsingEigen(const Device &d, const Tensor &in,
+                         const gtl::ArraySlice<int32> perm, Tensor *out) {
+  Eigen::array<int, NDIMS> p;
+  for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
+  auto x = typename TTypes<T, NDIMS>::ConstTensor(
+      reinterpret_cast<const T *>(in.tensor_data().data()),
+      in.shape().AsEigenDSizes<NDIMS>());
+  auto y = typename TTypes<T, NDIMS>::Tensor(
+      reinterpret_cast<T *>(const_cast<char *>(out->tensor_data().data())),
+      out->shape().AsEigenDSizes<NDIMS>());
+
+  y.device(d) = x.shuffle(p);
+}
+
+template <typename Device, typename T>
+Status TensorSetZero(OpKernelContext *ctx, Tensor *value) {
+  functor::SetZeroFunctor<Device, T> set_zero_functor;
+  set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>());
+  return Status::OK();
+}
+
+template <typename Device, typename T>
+Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
+                   const Tensor *add) {
+  ::tensorflow::functor::Add2EigenImpl<Device, T>::Compute(
+      ctx->template eigen_device<Device>(), sum->flat<T>(), current->flat<T>(),
+      add->flat<T>());
+  return Status::OK();
+}
+
 namespace functor {
+
+template <typename T>
+struct SetZeroFunctor<CPUDevice, T> {
+  void operator()(const CPUDevice &d, typename TTypes<T>::Flat out) {
+    out.device(d) = out.constant(T(0));
+  }
+};
+
+template <typename T>
+struct SetZeroFunctor<GPUDevice, T> {
+  void operator()(const GPUDevice &d, typename TTypes<T>::Flat out) {
+    To32Bit(out).device(d) = To32Bit(out).constant(T(0));
+  }
+};
 
 template <typename T>
 struct DeformableConv2DFunctor<CPUDevice, T>
@@ -63,8 +106,7 @@ struct DeformableConv2DFunctor<CPUDevice, T>
   }
 
   Status operator()(OpKernelContext *context) {
-    TF_RETURN_IF_ERROR(
-        tensor_array::TensorSetZero<CPUDevice, T>(context, &output_tensor));
+    TF_RETURN_IF_ERROR(TensorSetZero<CPUDevice, T>(context, &output_tensor));
 
     // input_channels * filter_rows * filter_cols / weight_groups ==
     // filter_channels * filter_rows * filter_cols
@@ -114,9 +156,9 @@ struct DeformableConv2DFunctor<CPUDevice, T>
         output_tensor,
         TensorShape({p.batches, p.parallel_imgs, p.output_channels,
                      p.output_rows, p.output_cols})));
-    TF_RETURN_IF_ERROR(DoTranspose(context->eigen_device<CPUDevice>(),
-                                   output_tmp_tensor, {0, 2, 1, 3, 4},
-                                   &output_tensor_reshaped));
+    TransposeUsingEigen<CPUDevice, T, 5>(context->eigen_device<CPUDevice>(),
+                                         output_tmp_tensor, {0, 2, 1, 3, 4},
+                                         &output_tensor_reshaped);
 
     if (p.use_bias) {
       Eigen::DSizes<int32, 4> four_dims(1, p.output_channels, 1, 1);
@@ -183,11 +225,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
 
   Status operator()(OpKernelContext *context) {
     TF_RETURN_IF_ERROR(
-        tensor_array::TensorSetZero<CPUDevice, T>(context, &input_grad_tensor));
-    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, T>(
-        context, &filter_grad_tensor));
-    TF_RETURN_IF_ERROR(tensor_array::TensorSetZero<CPUDevice, T>(
-        context, &column_buffer_tensor));
+        TensorSetZero<CPUDevice, T>(context, &input_grad_tensor));
+    TF_RETURN_IF_ERROR(
+        TensorSetZero<CPUDevice, T>(context, &filter_grad_tensor));
+    TF_RETURN_IF_ERROR(
+        TensorSetZero<CPUDevice, T>(context, &column_buffer_tensor));
 
     ComputeInputOffsetMaskGrad(context);
 
@@ -249,9 +291,9 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
       LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
                                               false, true, bcast, &out);
 
-      OP_REQUIRES_OK(context, tensor_array::AddToTensor<CPUDevice, T>(
-                                  context, &filter_grad_tensor,
-                                  &filter_grad_tensor, &out));
+      OP_REQUIRES_OK(context,
+                     AddToTensor<CPUDevice, T>(context, &filter_grad_tensor,
+                                               &filter_grad_tensor, &out));
     }
   }
 
@@ -739,10 +781,9 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
                    context->allocate_temp(DataTypeToEnum<T>::value,
                                           output_grad_tensor_transposed_shape,
                                           &output_grad_tensor_transposed));
-    OP_REQUIRES_OK(context,
-                   DoTranspose(context->eigen_device<CPUDevice>(),
-                               output_grad_tensor_reshaped, {0, 2, 1, 3, 4},
-                               &output_grad_tensor_transposed));
+    TransposeUsingEigen<CPUDevice, T, 5>(
+        context->eigen_device<CPUDevice>(), output_grad_tensor_reshaped,
+        {0, 2, 1, 3, 4}, &output_grad_tensor_transposed);
 
     TensorShape output_shape =
         ShapeFromFormat(data_format, p.input_batches, p.output_rows,
