@@ -75,6 +75,21 @@ Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
   return Status::OK();
 }
 
+template <typename Device, typename T, int NDIMS>
+void TransposeUsingEigen(const Device &d, const Tensor &in,
+                         const gtl::ArraySlice<int32> perm, Tensor *out) {
+  Eigen::array<int, NDIMS> p;
+  for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
+  auto x = typename TTypes<T, NDIMS>::ConstTensor(
+      reinterpret_cast<const T *>(in.tensor_data().data()),
+      in.shape().AsEigenDSizes<NDIMS>());
+  auto y = typename TTypes<T, NDIMS>::Tensor(
+      reinterpret_cast<T *>(const_cast<char *>(out->tensor_data().data())),
+      out->shape().AsEigenDSizes<NDIMS>());
+
+  y.device(d) = x.shuffle(p);
+}
+
 namespace functor {
 
 template <typename Device, typename T>
@@ -311,21 +326,6 @@ struct DeformableConv2DGradFunctor
 };
 
 }  // namespace functor
-
-template <typename Device, typename T, int NDIMS>
-void TransposeUsingEigen(const Device &d, const Tensor &in,
-                         const gtl::ArraySlice<int32> perm, Tensor *out) {
-  Eigen::array<int, NDIMS> p;
-  for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
-  auto x = typename TTypes<T, NDIMS>::ConstTensor(
-      reinterpret_cast<const T *>(in.tensor_data().data()),
-      in.shape().AsEigenDSizes<NDIMS>());
-  auto y = typename TTypes<T, NDIMS>::Tensor(
-      reinterpret_cast<T *>(const_cast<char *>(out->tensor_data().data())),
-      out->shape().AsEigenDSizes<NDIMS>());
-
-  y.device(d) = x.shuffle(p);
-}
 }  // namespace addons
 }  // namespace tensorflow
 
