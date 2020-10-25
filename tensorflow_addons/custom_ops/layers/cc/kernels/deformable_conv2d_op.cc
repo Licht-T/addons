@@ -46,92 +46,71 @@ struct SetZeroFunctor<GPUDevice, T> {
   }
 };
 
-template <typename T>
-struct DeformableConv2DFunctorBase<CPUDevice, T> {
-  DeformableConv2DFunctorBase(const Tensor *_input_tensor,
-                              const Tensor *_filter_tensor,
-                              const Tensor *_bias_tensor,
-                              const Tensor *_offset_tensor,
-                              const Tensor *_mask_tensor,
-                              Tensor *_column_buffer_tensor,
-                              DeformableConv2DParams *_p);
-
-  virtual Status operator()(OpKernelContext *context) = 0;
-
-  T BilinearInterpolate(int32 b, int32 batch, int32 channel, T y, T x);
-
-  void DeformableIm2Col(int32 b);
-
-  Tensor input_tensor;
-  Tensor filter_tensor;
-  Tensor bias_tensor;
-  Tensor offset_tensor;
-  Tensor mask_tensor;
-  Tensor column_buffer_tensor;
-  DeformableConv2DParams p;
-};
-
-template <typename T>
-void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(int32 b) {
-  auto num_kernels =
-      p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;
-
-  const auto offset_eigen_tensor = offset_tensor.tensor<T, 8>();
-
-  const auto mask_eigen_tensor =
-      p.use_mask ? mask_tensor.tensor<T, 7>()
-                 : mask_tensor.shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
-
-  auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<T, 4>();
-
-  for (auto k = 0; k < num_kernels; k++) {
-    const auto current_output_col = k % p.output_cols;
-    const auto current_output_row = (k / p.output_cols) % p.output_rows;
-    const auto current_batch =
-        (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;
-    const auto current_input_channel =
-        k / (p.output_rows * p.output_cols * p.parallel_imgs);
-    const auto current_output_channel =
-        current_input_channel * p.filter_rows * p.filter_cols;
-
-    const auto current_actual_batch = b * p.parallel_imgs + current_batch;
-
-    const auto group_index =
-        current_input_channel / (p.input_channels / p.offset_groups);
-
-    auto column_buffer_tensor_channel = current_output_channel;
-    for (auto current_filter_row = 0; current_filter_row < p.filter_rows;
-         current_filter_row++) {
-      for (auto current_filter_col = 0; current_filter_col < p.filter_cols;
-           current_filter_col++) {
-        auto offset_h = offset_eigen_tensor(
-            b, current_batch, group_index, current_filter_row,
-            current_filter_col, 0, current_output_row, current_output_col);
-        auto offset_w = offset_eigen_tensor(
-            b, current_batch, group_index, current_filter_row,
-            current_filter_col, 1, current_output_row, current_output_col);
-
-        auto mask = p.use_mask ? mask_eigen_tensor(
-            b, current_batch, group_index,
-            current_filter_row, current_filter_col,
-            current_output_row, current_output_col)
-                               : T(1);
-
-        auto y = (current_output_row * p.stride_rows - p.padding_rows) +
-                 current_filter_row * p.dilation_rows + offset_h;
-        auto x = (current_output_col * p.stride_cols - p.padding_cols) +
-                 current_filter_col * p.dilation_cols + offset_w;
-
-        column_buffer_eigen_tensor(column_buffer_tensor_channel,
-                                   current_batch, current_output_row,
-                                   current_output_col) =
-            mask * BilinearInterpolate(b, current_actual_batch,
-                                       current_input_channel, y, x);
-        column_buffer_tensor_channel++;
-      }
-    }
+#define IM2COL(T)                                                              \
+  template <>                                                                  \
+  void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(int32 b) {  \
+    auto num_kernels =                                                         \
+        p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;    \
+                                                                               \
+    const auto offset_eigen_tensor = offset_tensor.tensor<T, 8>();             \
+                                                                               \
+    const auto mask_eigen_tensor =                                             \
+        p.use_mask ? mask_tensor.tensor<T, 7>()                                \
+                   : mask_tensor.shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});          \
+                                                                               \
+    auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<T, 4>();     \
+                                                                               \
+    for (auto k = 0; k < num_kernels; k++) {                                   \
+      const auto current_output_col = k % p.output_cols;                       \
+      const auto current_output_row = (k / p.output_cols) % p.output_rows;     \
+      const auto current_batch =                                               \
+          (k / (p.output_rows * p.output_cols)) % p.parallel_imgs;             \
+      const auto current_input_channel =                                       \
+          k / (p.output_rows * p.output_cols * p.parallel_imgs);               \
+      const auto current_output_channel =                                      \
+          current_input_channel * p.filter_rows * p.filter_cols;               \
+                                                                               \
+      const auto current_actual_batch = b * p.parallel_imgs + current_batch;   \
+                                                                               \
+      const auto group_index =                                                 \
+          current_input_channel / (p.input_channels / p.offset_groups);        \
+                                                                               \
+      auto column_buffer_tensor_channel = current_output_channel;              \
+      for (auto current_filter_row = 0; current_filter_row < p.filter_rows;    \
+           current_filter_row++) {                                             \
+        for (auto current_filter_col = 0; current_filter_col < p.filter_cols;  \
+             current_filter_col++) {                                           \
+          auto offset_h = offset_eigen_tensor(                                 \
+              b, current_batch, group_index, current_filter_row,               \
+              current_filter_col, 0, current_output_row, current_output_col);  \
+          auto offset_w = offset_eigen_tensor(                                 \
+              b, current_batch, group_index, current_filter_row,               \
+              current_filter_col, 1, current_output_row, current_output_col);  \
+                                                                               \
+          auto mask = p.use_mask ? mask_eigen_tensor(                          \
+                                       b, current_batch, group_index,          \
+                                       current_filter_row, current_filter_col, \
+                                       current_output_row, current_output_col) \
+                                 : T(1);                                       \
+                                                                               \
+          auto y = (current_output_row * p.stride_rows - p.padding_rows) +     \
+                   current_filter_row * p.dilation_rows + offset_h;            \
+          auto x = (current_output_col * p.stride_cols - p.padding_cols) +     \
+                   current_filter_col * p.dilation_cols + offset_w;            \
+                                                                               \
+          column_buffer_eigen_tensor(column_buffer_tensor_channel,             \
+                                     current_batch, current_output_row,        \
+                                     current_output_col) =                     \
+              mask * BilinearInterpolate(b, current_actual_batch,              \
+                                         current_input_channel, y, x);         \
+          column_buffer_tensor_channel++;                                      \
+        }                                                                      \
+      }                                                                        \
+    }                                                                          \
   }
-}
+TF_CALL_float(IM2COL);
+TF_CALL_double(IM2COL);
+#undef IM2COL
 
 template <typename T>
 struct DeformableConv2DGradFunctor<CPUDevice, T>
