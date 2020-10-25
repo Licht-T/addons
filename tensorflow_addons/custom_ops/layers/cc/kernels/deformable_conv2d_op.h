@@ -74,7 +74,7 @@ struct DeformableConv2DFunctorBase {
         *_filter_tensor,
         TensorShape({p.weight_groups, p.output_channels / p.weight_groups,
                      p.filter_channels * p.filter_rows * p.filter_cols})));
-    CHECK(bias_tensor.CopyFrom(*_bias_tensor, bias_tensor.shape()));
+    CHECK(bias_tensor.CopyFrom(*_bias_tensor, _bias_tensor->shape()));
 
     CHECK(offset_tensor.CopyFrom(
         *_offset_tensor,
@@ -104,7 +104,7 @@ struct DeformableConv2DFunctorBase {
     auto img = input_tensor.SubSlice(b)
                    .SubSlice(batch)
                    .SubSlice(channel)
-                   .tensor<T, 2>();
+                   .unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
 
     auto max_height = img.dimension(0);
     auto max_width = img.dimension(1);
@@ -155,6 +155,12 @@ struct DeformableConv2DFunctorBase {
     auto num_kernels =
         p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;
 
+    const auto offset_eigen_tensor = offset_tensor.tensor<T, 8>();
+
+    const auto mask_eigen_tensor =
+        p.use_mask ? mask_tensor.tensor<T, 7>()
+                   : mask_tensor.shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
+
     auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<T, 4>();
 
     for (auto k = 0; k < num_kernels; k++) {
@@ -172,31 +178,20 @@ struct DeformableConv2DFunctorBase {
       const auto group_index =
           current_input_channel / (p.input_channels / p.offset_groups);
 
-      const auto offset_eigen_tensor = offset_tensor.SubSlice(b)
-                                           .SubSlice(current_batch)
-                                           .SubSlice(group_index)
-                                           .tensor<T, 5>();
-
-      const auto mask_eigen_tensor =
-          p.use_mask ? mask_tensor.SubSlice(b)
-                           .SubSlice(current_batch)
-                           .SubSlice(group_index)
-                           .tensor<T, 4>()
-                     : mask_tensor.shaped<T, 4>({0, 0, 0, 0});
-
       auto column_buffer_tensor_channel = current_output_channel;
       for (auto current_filter_row = 0; current_filter_row < p.filter_rows;
            current_filter_row++) {
         for (auto current_filter_col = 0; current_filter_col < p.filter_cols;
              current_filter_col++) {
-          auto offset_h =
-              offset_eigen_tensor(current_filter_row, current_filter_col, 0,
-                                  current_output_row, current_output_col);
-          auto offset_w =
-              offset_eigen_tensor(current_filter_row, current_filter_col, 1,
-                                  current_output_row, current_output_col);
+          auto offset_h = offset_eigen_tensor(
+              b, current_batch, group_index, current_filter_row,
+              current_filter_col, 0, current_output_row, current_output_col);
+          auto offset_w = offset_eigen_tensor(
+              b, current_batch, group_index, current_filter_row,
+              current_filter_col, 1, current_output_row, current_output_col);
 
           auto mask = p.use_mask ? mask_eigen_tensor(
+                                       b, current_batch, group_index,
                                        current_filter_row, current_filter_col,
                                        current_output_row, current_output_col)
                                  : T(1);

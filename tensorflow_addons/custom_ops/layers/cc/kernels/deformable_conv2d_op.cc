@@ -80,6 +80,12 @@ struct DeformableConv2DFunctor<CPUDevice, T>
                      p.output_rows, p.output_cols}),
         &output_tmp_tensor));
 
+    Tensor output_tmp_mtx_tensor;
+    TF_RETURN_IF_ERROR(context->allocate_temp(
+        DataTypeToEnum<T>::value,
+        TensorShape({p.weight_groups, rows, cols}),
+        &output_tmp_mtx_tensor));
+
     Tensor output_tmp_tensor_reshaped(output_tmp_tensor.dtype());
     CHECK(output_tmp_tensor_reshaped.CopyFrom(
         output_tmp_tensor,
@@ -94,12 +100,14 @@ struct DeformableConv2DFunctor<CPUDevice, T>
 
       auto lhs = filter_tensor;
       auto rhs = column_buffer_tensor_reshaped;
-      auto out = output_tmp_tensor_reshaped.SubSlice(b);
+      auto out = output_tmp_mtx_tensor;
 
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
       LaunchBatchMatMul<CPUDevice, T>::Launch(context, lhs, rhs, false, false,
                                               false, false, bcast, &out);
+
+      TF_RETURN_IF_ERROR(batch_util::CopyElementToSlice(out, &output_tmp_tensor_reshaped, b));
     }
 
     Tensor output_tensor_reshaped(output_tensor.dtype());
@@ -274,12 +282,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     const auto num_kernels = p.output_rows * p.output_cols * 2 * p.filter_rows *
                              p.filter_cols * p.offset_groups * p.parallel_imgs;
 
-    const auto offset_eigen_tensor =
-        offset_tensor.SubSlice(b).template tensor<T, 7>();
+    const auto offset_eigen_tensor = offset_tensor.template tensor<T, 8>();
 
     const auto mask_eigen_tensor =
-        p.use_mask ? mask_tensor.SubSlice(b).template tensor<T, 6>()
-                   : mask_tensor.template shaped<T, 6>({0, 0, 0, 0, 0, 0});
+        p.use_mask ? mask_tensor.template tensor<T, 7>()
+                   : mask_tensor.template shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
 
     const auto column_buffer_eigen_tensor =
         column_buffer_tensor.template shaped<T, 6>(
@@ -333,14 +340,14 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
             (selected_offset_channel / (p.filter_cols * p.filter_rows));
 
         const auto offset_h = offset_eigen_tensor(
-            current_batch, current_offset_group, selected_filter_row,
+            b, current_batch, current_offset_group, selected_filter_row,
             selected_filter_col, 0, current_output_row, current_output_col);
         const auto offset_w = offset_eigen_tensor(
-            current_batch, current_offset_group, selected_filter_row,
+            b, current_batch, current_offset_group, selected_filter_row,
             selected_filter_col, 1, current_output_row, current_output_col);
         const auto mask =
             p.use_mask
-                ? mask_eigen_tensor(current_batch, current_offset_group,
+                ? mask_eigen_tensor(b, current_batch, current_offset_group,
                                     selected_filter_row, selected_filter_col,
                                     current_output_row, current_output_col)
                 : T(1);
@@ -392,12 +399,11 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     const auto num_kernels = p.input_channels * p.filter_rows * p.filter_cols *
                              p.output_rows * p.output_cols * p.parallel_imgs;
 
-    const auto offset_eigen_tensor =
-        offset_tensor.SubSlice(b).template tensor<T, 7>();
+    const auto offset_eigen_tensor = offset_tensor.template tensor<T, 8>();
 
     const auto mask_eigen_tensor =
-        p.use_mask ? mask_tensor.SubSlice(b).template tensor<T, 6>()
-                   : mask_tensor.template shaped<T, 6>({0, 0, 0, 0, 0, 0});
+        p.use_mask ? mask_tensor.template tensor<T, 7>()
+                   : mask_tensor.template shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});
 
     const auto column_buffer_tensor_flattened =
         column_buffer_tensor.template shaped<T, 1>({num_kernels});
@@ -424,16 +430,16 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
           current_channel / (p.input_channels / p.offset_groups);
 
       const auto mask =
-          p.use_mask ? mask_eigen_tensor(current_batch, current_offset_group,
+          p.use_mask ? mask_eigen_tensor(b, current_batch, current_offset_group,
                                          current_filter_row, current_filter_col,
                                          current_output_row, current_output_col)
                      : T(1);
 
       const auto offset_h = offset_eigen_tensor(
-          current_batch, current_offset_group, current_filter_row,
+          b, current_batch, current_offset_group, current_filter_row,
           current_filter_col, 0, current_output_row, current_output_col);
       const auto offset_w = offset_eigen_tensor(
-          current_batch, current_offset_group, current_filter_row,
+          b, current_batch, current_offset_group, current_filter_row,
           current_filter_col, 1, current_output_row, current_output_col);
 
       const auto y = (current_output_row * p.stride_rows - p.padding_rows) +
@@ -470,7 +476,7 @@ struct DeformableConv2DGradFunctor<CPUDevice, T>
     const auto img = input_tensor.SubSlice(b)
                          .SubSlice(batch)
                          .SubSlice(channel)
-                         .template tensor<T, 2>();
+                         .template unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
 
     const auto max_height = img.dimension(0);
     const auto max_width = img.dimension(1);
