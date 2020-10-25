@@ -93,7 +93,7 @@ void TransposeUsingEigen(const Device &d, const Tensor &in,
 namespace functor {
 
 template <typename T>
-EIGEN_DEVICE_FUNC T BilinearInterpolate(typename TTypes<T, 5>::ConstTensor img,
+EIGEN_DEVICE_FUNC T BilinearInterpolate(typename TTypes<T, 5>::Tensor img,
                                         int32 b, int32 batch, int32 channel,
                                         T y, T x, DeformableConv2DParams p) {
   auto max_height = p.input_rows;
