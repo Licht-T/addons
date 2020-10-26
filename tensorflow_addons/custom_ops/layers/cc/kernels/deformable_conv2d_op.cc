@@ -39,16 +39,10 @@ struct SetZeroFunctor<CPUDevice, T> {
   }
 };
 
-template <typename T>
-struct SetZeroFunctor<GPUDevice, T> {
-  void operator()(const GPUDevice &d, typename TTypes<T>::Flat out) {
-    To32Bit(out).device(d) = To32Bit(out).constant(T(0));
-  }
-};
-
 #define IM2COL(T)                                                              \
   template <>                                                                  \
-  void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(int32 b) {  \
+  void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(            \
+      OpKernelContext *context, int32 b) {                                     \
     auto num_kernels =                                                         \
         p.input_channels * p.output_rows * p.output_cols * p.parallel_imgs;    \
                                                                                \
@@ -57,6 +51,8 @@ struct SetZeroFunctor<GPUDevice, T> {
     const auto mask_eigen_tensor =                                             \
         p.use_mask ? mask_tensor.tensor<T, 7>()                                \
                    : mask_tensor.shaped<T, 7>({0, 0, 0, 0, 0, 0, 0});          \
+                                                                               \
+    const auto input_eigen_tensor = input_tensor.tensor<T, 5>();               \
                                                                                \
     auto column_buffer_eigen_tensor = column_buffer_tensor.tensor<T, 4>();     \
                                                                                \
@@ -101,9 +97,9 @@ struct SetZeroFunctor<GPUDevice, T> {
           column_buffer_eigen_tensor(column_buffer_tensor_channel,             \
                                      current_batch, current_output_row,        \
                                      current_output_col) =                     \
-              mask * BilinearInterpolate<T>(input_tensor.tensor<T, 5>(), b,    \
+              mask * BilinearInterpolate<T>(input_eigen_tensor, b,             \
                                             current_actual_batch,              \
-                                            current_input_channel, y, x, p);   \
+                                            current_input_channel, y, x);      \
           column_buffer_tensor_channel++;                                      \
         }                                                                      \
       }                                                                        \
@@ -117,7 +113,7 @@ TF_CALL_double(IM2COL);
   template <>                                                                  \
   void                                                                         \
   DeformableConv2DGradFunctor<CPUDevice, T>::DeformableCol2ImForOffsetAndMask( \
-      int32 b) {                                                               \
+      OpKernelContext *context, int32 b) {                                     \
     const auto num_kernels = p.output_rows * p.output_cols * 2 *               \
                              p.filter_rows * p.filter_cols * p.offset_groups * \
                              p.parallel_imgs;                                  \
@@ -135,6 +131,8 @@ TF_CALL_double(IM2COL);
                                                                                \
     auto offset_grad_eigen_tensor = offset_grad_tensor.tensor<T, 4>();         \
     auto mask_grad_eigen_tensor = mask_grad_tensor.tensor<T, 4>();             \
+                                                                               \
+    const auto input_eigen_tensor = input_tensor.tensor<T, 5>();               \
                                                                                \
     for (auto k = 0; k < num_kernels; k++) {                                   \
       auto offset_grad_value = T(0);                                           \
@@ -206,18 +204,17 @@ TF_CALL_double(IM2COL);
             selected_input_channel, selected_filter_row, selected_filter_col,  \
             current_batch, current_output_row, current_output_col);            \
                                                                                \
-        const auto weight =                                                    \
-            GetCoordinateWeight(b, current_actual_batch,                       \
-                                selected_input_channel, y, x, is_y_direction); \
+        const auto weight = GetCoordinateWeight<T>(                            \
+            input_eigen_tensor, b, current_actual_batch,                       \
+            selected_input_channel, y, x, is_y_direction);                     \
                                                                                \
         offset_grad_value += mask * weight * filter_data;                      \
                                                                                \
         if (is_y_direction) {                                                  \
           mask_grad_value +=                                                   \
-              filter_data *                                                    \
-              BilinearInterpolate<T>(input_tensor.tensor<T, 5>(), b,           \
-                                     current_actual_batch,                     \
-                                     selected_input_channel, y, x, p);         \
+              filter_data * BilinearInterpolate<T>(                            \
+                                input_eigen_tensor, b, current_actual_batch,   \
+                                selected_input_channel, y, x);                 \
         }                                                                      \
       }                                                                        \
                                                                                \
@@ -244,7 +241,7 @@ TF_CALL_double(COL2IM_OFFSET_AND_MASK);
 #define COL2IM_INPUT(T)                                                        \
   template <>                                                                  \
   void DeformableConv2DGradFunctor<CPUDevice, T>::DeformableCol2ImForInput(    \
-      int32 b) {                                                               \
+      OpKernelContext *context, int32 b) {                                     \
     const auto num_kernels = p.input_channels * p.filter_rows *                \
                              p.filter_cols * p.output_rows * p.output_cols *   \
                              p.parallel_imgs;                                  \
@@ -567,6 +564,21 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
 TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_CPU);
 TF_CALL_double(REGISTER_DEFORMABLECONV2D_OP_CPU);
 #undef REGISTER_DEFORMABLECONV2D_OP_CPU
+
+// Register the GPU kernels.
+#define REGISTER_DEFORMABLECONV2D_OP_GPU(T)                   \
+  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2D")     \
+                              .Device(DEVICE_GPU)             \
+                              .TypeConstraint<T>("T"),        \
+                          DeformableConv2DOp<GPUDevice, T>)   \
+  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2DGrad") \
+                              .Device(DEVICE_GPU)             \
+                              .TypeConstraint<T>("T"),        \
+                          DeformableConv2DGradOp<GPUDevice, T>)
+
+TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_GPU);
+TF_CALL_double(REGISTER_DEFORMABLECONV2D_OP_GPU);
+#undef REGISTER_DEFORMABLECONV2D_OP_GPU
 
 }  // namespace addons
 }  // namespace tensorflow

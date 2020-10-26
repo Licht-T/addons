@@ -95,9 +95,9 @@ namespace functor {
 template <typename T>
 EIGEN_DEVICE_FUNC T BilinearInterpolate(typename TTypes<T, 5>::Tensor img,
                                         int32 b, int32 batch, int32 channel,
-                                        T y, T x, DeformableConv2DParams p) {
-  auto max_height = p.input_rows;
-  auto max_width = p.input_cols;
+                                        T y, T x) {
+  const auto max_height = img.dimension(3);
+  const auto max_width = img.dimension(4);
 
   if (y <= -1 || max_height <= y || x <= -1 || max_width <= x) {
     return T(0);
@@ -139,6 +139,52 @@ EIGEN_DEVICE_FUNC T BilinearInterpolate(typename TTypes<T, 5>::Tensor img,
   auto w4 = lh * lw;
 
   return w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4;
+}
+
+template <typename T>
+EIGEN_DEVICE_FUNC T GetCoordinateWeight(typename TTypes<T, 5>::Tensor img,
+                                        int32 b, int32 batch, int32 channel,
+                                        T y, T x, bool is_y_direction) {
+  const auto max_height = img.dimension(3);
+  const auto max_width = img.dimension(4);
+
+  const int y_low = floor(y);
+  const int x_low = floor(x);
+  const int y_high = y_low + 1;
+  const int x_high = x_low + 1;
+
+  const bool valid_y_low = max_height > y_low && y_low >= 0;
+  const bool valid_y_high = max_height > y_high && y_high >= 0;
+  const bool valid_x_low = max_width > x_low && x_low >= 0;
+  const bool valid_x_high = max_width > x_high && x_high >= 0;
+
+  auto v_yx = T(0);
+  if (valid_y_low && valid_x_low) {
+    v_yx = img(b, batch, channel, y_low, x_low);
+  }
+
+  auto v_yX = T(0);
+  if (valid_y_low && valid_x_high) {
+    v_yX = img(b, batch, channel, y_low, x_high);
+  }
+
+  auto v_Yx = T(0);
+  if (valid_y_high && valid_x_low) {
+    v_Yx = img(b, batch, channel, y_high, x_low);
+  }
+
+  auto v_YX = T(0);
+  if (valid_y_high && valid_x_high) {
+    v_YX = img(b, batch, channel, y_high, x_high);
+  }
+
+  if (is_y_direction) {
+    const auto dx = x - x_low;
+    return (v_YX - v_yX) * dx + (v_Yx - v_yx) * (1 - dx);
+  } else {
+    const auto dy = y - y_low;
+    return (v_YX - v_Yx) * dy + (v_yX - v_yx) * (1 - dy);
+  }
 }
 
 template <typename Device, typename T>
@@ -191,7 +237,7 @@ struct DeformableConv2DFunctorBase {
 
   virtual Status operator()(OpKernelContext *context) = 0;
 
-  void DeformableIm2Col(int32 b);
+  void DeformableIm2Col(OpKernelContext *context, int32 b);
 
   Tensor input_tensor;
   Tensor filter_tensor;
@@ -257,7 +303,7 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
         column_buffer_tensor, TensorShape({p.weight_groups, elems, cols})));
 
     for (auto b = 0; b < p.batches; b++) {
-      this->DeformableIm2Col(b);
+      this->DeformableIm2Col(context, b);
 
       auto lhs = filter_tensor;
       auto rhs = column_buffer_tensor_reshaped;
@@ -397,7 +443,7 @@ struct DeformableConv2DGradFunctor
                                 &matmul_out_tmp_tensor));
 
     for (auto b = 0; b < p.batches; b++) {
-      this->DeformableIm2Col(b);
+      this->DeformableIm2Col(context, b);
 
       // FIXME: !!!!!
       auto lhs = matmul_lhs_tmp_tensor;
@@ -453,66 +499,15 @@ struct DeformableConv2DGradFunctor
       LaunchBatchMatMul<Device, T>::Launch(context, lhs, rhs, false, false,
                                            true, false, bcast, &out);
 
-      DeformableCol2ImForOffsetAndMask(b);
+      DeformableCol2ImForOffsetAndMask(context, b);
 
-      DeformableCol2ImForInput(b);
+      DeformableCol2ImForInput(context, b);
     }
   }
 
-  void DeformableCol2ImForOffsetAndMask(int32 b);
+  void DeformableCol2ImForOffsetAndMask(OpKernelContext *context, int32 b);
 
-  void DeformableCol2ImForInput(int32 b);
-
-  // FIXME: staticにするか、外に分離
-  EIGEN_DEVICE_FUNC T GetCoordinateWeight(int32 b, int32 batch, int32 channel,
-                                          T y, T x, bool is_y_direction) {
-    const auto img =
-        input_tensor.SubSlice(b)
-            .SubSlice(batch)
-            .SubSlice(channel)
-            .template unaligned_shaped<T, 2>({p.input_rows, p.input_cols});
-
-    const auto max_height = img.dimension(0);
-    const auto max_width = img.dimension(1);
-
-    const int y_low = floor(y);
-    const int x_low = floor(x);
-    const int y_high = y_low + 1;
-    const int x_high = x_low + 1;
-
-    const bool valid_y_low = max_height > y_low && y_low >= 0;
-    const bool valid_y_high = max_height > y_high && y_high >= 0;
-    const bool valid_x_low = max_width > x_low && x_low >= 0;
-    const bool valid_x_high = max_width > x_high && x_high >= 0;
-
-    auto v_yx = T(0);
-    if (valid_y_low && valid_x_low) {
-      v_yx = img(y_low, x_low);
-    }
-
-    auto v_yX = T(0);
-    if (valid_y_low && valid_x_high) {
-      v_yX = img(y_low, x_high);
-    }
-
-    auto v_Yx = T(0);
-    if (valid_y_high && valid_x_low) {
-      v_Yx = img(y_high, x_low);
-    }
-
-    auto v_YX = T(0);
-    if (valid_y_high && valid_x_high) {
-      v_YX = img(y_high, x_high);
-    }
-
-    if (is_y_direction) {
-      const auto dx = x - x_low;
-      return (v_YX - v_yX) * dx + (v_Yx - v_yx) * (1 - dx);
-    } else {
-      const auto dy = y - y_low;
-      return (v_YX - v_Yx) * dy + (v_yX - v_yx) * (1 - dy);
-    }
-  }
+  void DeformableCol2ImForInput(OpKernelContext *context, int32 b);
 
   Tensor output_grad_tensor;
   Tensor input_grad_tensor;
