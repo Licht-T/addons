@@ -57,6 +57,20 @@ struct SetZeroFunctor {
   void operator()(const Device &d, typename TTypes<T>::Flat out);
 };
 
+template <typename Device, typename T>
+struct Add2Functor {
+  void operator()(const Device &d, typename TTypes<T>::Flat out,
+                  typename TTypes<T>::ConstFlat in1,
+                  typename TTypes<T>::ConstFlat in2);
+};
+
+template <typename Device, typename T, int NDIMS>
+struct TransposeFunctor {
+  void operator()(const Device &d, typename TTypes<T, NDIMS>::ConstTensor in,
+                  const Eigen::array<int, NDIMS> &p,
+                  typename TTypes<T, NDIMS>::Tensor out);
+};
+
 }  // namespace functor
 
 template <typename Device, typename T>
@@ -67,19 +81,41 @@ Status TensorSetZero(OpKernelContext *ctx, Tensor *value) {
 }
 
 template <typename Device, typename T>
+struct Add2EigenImpl {
+  static void Compute(const Device &d, typename TTypes<T>::Flat out,
+                      typename TTypes<T>::ConstFlat in1,
+                      typename TTypes<T>::ConstFlat in2) {
+    out.device(d) = in1 + in2;
+  }
+};
+
+template <typename Device, typename T>
 Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
                    const Tensor *add) {
-  ::tensorflow::functor::Add2EigenImpl<Device, T>::Compute(
-      ctx->template eigen_device<Device>(), sum->flat<T>(), current->flat<T>(),
-      add->flat<T>());
+  functor::Add2Functor<Device, T> add2Functor;
+  add2Functor(ctx->template eigen_device<Device>(), sum->flat<T>(),
+              current->flat<T>(), add->flat<T>());
   return Status::OK();
 }
 
 template <typename Device, typename T, int NDIMS>
-void TransposeUsingEigen(const Device &d, const Tensor &in,
-                         const gtl::ArraySlice<int32> perm, Tensor *out) {
+struct TransposeEigenImpl {
+  static void Compute(const Device &d,
+                      typename TTypes<T, NDIMS>::ConstTensor in,
+                      const Eigen::array<int, NDIMS> &p,
+                      typename TTypes<T, NDIMS>::Tensor out) {
+    out.device(d) = in.shuffle(p);
+  }
+};
+
+template <typename Device, typename T, int NDIMS>
+Status Transpose(OpKernelContext *ctx, const Tensor &in,
+                 const gtl::ArraySlice<int32> perm, Tensor *out) {
   Eigen::array<int, NDIMS> p;
-  for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
+  for (int i = 0; i < NDIMS; ++i) {
+    p[i] = perm[i];
+  }
+
   auto x = typename TTypes<T, NDIMS>::ConstTensor(
       reinterpret_cast<const T *>(in.tensor_data().data()),
       in.shape().AsEigenDSizes<NDIMS>());
@@ -87,7 +123,10 @@ void TransposeUsingEigen(const Device &d, const Tensor &in,
       reinterpret_cast<T *>(const_cast<char *>(out->tensor_data().data())),
       out->shape().AsEigenDSizes<NDIMS>());
 
-  y.device(d) = x.shuffle(p);
+  functor::TransposeFunctor<Device, T, NDIMS> transposeFunctor;
+  transposeFunctor(ctx->template eigen_device<Device>(), x, p, y);
+
+  return Status::OK();
 }
 
 namespace functor {
@@ -323,9 +362,8 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
         output_tensor,
         TensorShape({p.batches, p.parallel_imgs, p.output_channels,
                      p.output_rows, p.output_cols})));
-    TransposeUsingEigen<Device, T, 5>(context->eigen_device<Device>(),
-                                      output_tmp_tensor, {0, 2, 1, 3, 4},
-                                      &output_tensor_reshaped);
+    TF_RETURN_IF_ERROR(Transpose<Device, T, 5>(
+        context, output_tmp_tensor, {0, 2, 1, 3, 4}, &output_tensor_reshaped));
 
     if (p.use_bias) {
       // FIXME: GPUで動くか確認

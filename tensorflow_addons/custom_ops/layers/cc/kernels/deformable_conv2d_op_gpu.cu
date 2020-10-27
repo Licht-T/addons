@@ -13,8 +13,6 @@
 // limitations under the License.
 // =============================================================================
 
-#define EIGEN_USE_THREADS
-
 #if GOOGLE_CUDA
 #define EIGEN_USE_GPU
 #endif  // GOOGLE_CUDA
@@ -35,6 +33,24 @@ template <typename T>
 struct SetZeroFunctor<GPUDevice, T> {
   void operator()(const GPUDevice &d, typename TTypes<T>::Flat out) {
     To32Bit(out).device(d) = To32Bit(out).constant(T(0));
+  }
+};
+
+template <typename T>
+struct Add2Functor<GPUDevice, T> {
+  void operator()(const GPUDevice& d, typename TTypes<T>::Flat out,
+                  typename TTypes<T>::ConstFlat in1,
+                  typename TTypes<T>::ConstFlat in2) {
+    Add2EigenImpl<GPUDevice, T>::Compute(d, out, in1, in2);
+  }
+};
+
+template <typename T, int NDIMS>
+struct TransposeFunctor<GPUDevice, T, NDIMS> {
+  void operator()(const GPUDevice& d, typename TTypes<T, NDIMS>::ConstTensor in,
+                  const Eigen::array<int, NDIMS>& p,
+                  typename TTypes<T, NDIMS>::Tensor out) {
+    TransposeEigenImpl<GPUDevice, T, NDIMS>::Compute(d, in, p, out);
   }
 };
 

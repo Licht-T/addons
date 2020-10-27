@@ -39,6 +39,24 @@ struct SetZeroFunctor<CPUDevice, T> {
   }
 };
 
+template <typename T>
+struct Add2Functor<CPUDevice, T> {
+  void operator()(const CPUDevice &d, typename TTypes<T>::Flat out,
+                  typename TTypes<T>::ConstFlat in1,
+                  typename TTypes<T>::ConstFlat in2) {
+    Add2EigenImpl<CPUDevice, T>::Compute(d, out, in1, in2);
+  }
+};
+
+template <typename T, int NDIMS>
+struct TransposeFunctor<CPUDevice, T, NDIMS> {
+  void operator()(const CPUDevice &d, typename TTypes<T, NDIMS>::ConstTensor in,
+                  const Eigen::array<int, NDIMS> &p,
+                  typename TTypes<T, NDIMS>::Tensor out) {
+    TransposeEigenImpl<CPUDevice, T, NDIMS>::Compute(d, in, p, out);
+  }
+};
+
 #define IM2COL(T)                                                              \
   template <>                                                                  \
   void DeformableConv2DFunctorBase<CPUDevice, T>::DeformableIm2Col(            \
@@ -515,9 +533,10 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
                    context->allocate_temp(DataTypeToEnum<T>::value,
                                           output_grad_tensor_transposed_shape,
                                           &output_grad_tensor_transposed));
-    TransposeUsingEigen<CPUDevice, T, 5>(
-        context->eigen_device<CPUDevice>(), output_grad_tensor_reshaped,
-        {0, 2, 1, 3, 4}, &output_grad_tensor_transposed);
+    OP_REQUIRES_OK(context,
+                   Transpose<Device, T, 5>(context, output_grad_tensor_reshaped,
+                                           {0, 2, 1, 3, 4},
+                                           &output_grad_tensor_transposed));
 
     TensorShape output_shape =
         ShapeFromFormat(data_format, p.input_batches, p.output_rows,
