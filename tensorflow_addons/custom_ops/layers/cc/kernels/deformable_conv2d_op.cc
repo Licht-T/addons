@@ -32,6 +32,14 @@ using GPUDevice = Eigen::GpuDevice;
 
 namespace functor {
 
+#define EXTERN_TEMPLATE(T)                                          \
+  extern template struct DeformableConv2DFunctorBase<GPUDevice, T>; \
+  extern template struct DeformableConv2DFunctor<GPUDevice, T>;     \
+  extern template struct DeformableConv2DGradFunctor<GPUDevice, T>;
+TF_CALL_float(EXTERN_TEMPLATE);
+TF_CALL_double(EXTERN_TEMPLATE);
+#undef EXTERN_TEMPLATE
+
 template <typename T>
 struct SetZeroFunctor<CPUDevice, T> {
   void operator()(const CPUDevice &d, typename TTypes<T>::Flat out) {
