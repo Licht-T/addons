@@ -15,7 +15,6 @@
 
 #if GOOGLE_CUDA
 #define EIGEN_USE_GPU
-#endif  // GOOGLE_CUDA
 
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/kernel_shape_util.h"
@@ -33,24 +32,6 @@ template <typename T>
 struct SetZeroFunctor<GPUDevice, T> {
   void operator()(const GPUDevice &d, typename TTypes<T>::Flat out) {
     To32Bit(out).device(d) = To32Bit(out).constant(T(0));
-  }
-};
-
-template <typename T>
-struct Add2Functor<GPUDevice, T> {
-  void operator()(const GPUDevice& d, typename TTypes<T>::Flat out,
-                  typename TTypes<T>::ConstFlat in1,
-                  typename TTypes<T>::ConstFlat in2) {
-    Add2EigenImpl<GPUDevice, T>::Compute(d, out, in1, in2);
-  }
-};
-
-template <typename T, int NDIMS>
-struct TransposeFunctor<GPUDevice, T, NDIMS> {
-  void operator()(const GPUDevice& d, typename TTypes<T, NDIMS>::ConstTensor in,
-                  const Eigen::array<int, NDIMS>& p,
-                  typename TTypes<T, NDIMS>::Tensor out) {
-    TransposeEigenImpl<GPUDevice, T, NDIMS>::Compute(d, in, p, out);
   }
 };
 
@@ -380,6 +361,24 @@ TF_CALL_float(COL2IM_INPUT);
 TF_CALL_double(COL2IM_INPUT);
 #undef COL2IM_INPUT
 
+#define EXPLICIT_TEMPLATE(T)                             \
+  template struct DeformableConv2DFunctor<GPUDevice, T>; \
+  template struct DeformableConv2DGradFunctor<GPUDevice, T>;
+TF_CALL_float(EXPLICIT_TEMPLATE);
+TF_CALL_double(EXPLICIT_TEMPLATE);
+#undef EXPLICIT_TEMPLATE
+
 }  // end namespace functor
+
+#define EXPLICIT_TEMPLATE(T)                                                   \
+  template void TransposeUsingEigen<GPUDevice, T, 5>(                          \
+      const GPUDevice &d, const Tensor &in, const gtl::ArraySlice<int32> perm, \
+      Tensor *out);
+TF_CALL_float(EXPLICIT_TEMPLATE);
+TF_CALL_double(EXPLICIT_TEMPLATE);
+#undef EXPLICIT_TEMPLATE
+
 }  // namespace addons
 }  // namespace tensorflow
+
+#endif  // GOOGLE_CUDA

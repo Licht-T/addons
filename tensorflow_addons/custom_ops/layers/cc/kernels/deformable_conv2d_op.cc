@@ -15,10 +15,6 @@
 
 #define EIGEN_USE_THREADS
 
-#if GOOGLE_CUDA
-#define EIGEN_USE_GPU
-#endif  // GOOGLE_CUDA
-
 #include "tensorflow_addons/custom_ops/layers/cc/kernels/deformable_conv2d_op.h"
 
 #include "tensorflow/core/framework/common_shape_fns.h"
@@ -30,11 +26,18 @@ namespace addons {
 using CPUDevice = Eigen::ThreadPoolDevice;
 using GPUDevice = Eigen::GpuDevice;
 
+#define EXTERN_TEMPLATE(T)                                                     \
+  extern template void TransposeUsingEigen<GPUDevice, T, 5>(                   \
+      const GPUDevice &d, const Tensor &in, const gtl::ArraySlice<int32> perm, \
+      Tensor *out);
+TF_CALL_float(EXTERN_TEMPLATE);
+TF_CALL_double(EXTERN_TEMPLATE);
+#undef EXTERN_TEMPLATE
+
 namespace functor {
 
-#define EXTERN_TEMPLATE(T)                                          \
-  extern template struct DeformableConv2DFunctorBase<GPUDevice, T>; \
-  extern template struct DeformableConv2DFunctor<GPUDevice, T>;     \
+#define EXTERN_TEMPLATE(T)                                      \
+  extern template struct DeformableConv2DFunctor<GPUDevice, T>; \
   extern template struct DeformableConv2DGradFunctor<GPUDevice, T>;
 TF_CALL_float(EXTERN_TEMPLATE);
 TF_CALL_double(EXTERN_TEMPLATE);
@@ -44,24 +47,6 @@ template <typename T>
 struct SetZeroFunctor<CPUDevice, T> {
   void operator()(const CPUDevice &d, typename TTypes<T>::Flat out) {
     out.device(d) = out.constant(T(0));
-  }
-};
-
-template <typename T>
-struct Add2Functor<CPUDevice, T> {
-  void operator()(const CPUDevice &d, typename TTypes<T>::Flat out,
-                  typename TTypes<T>::ConstFlat in1,
-                  typename TTypes<T>::ConstFlat in2) {
-    Add2EigenImpl<CPUDevice, T>::Compute(d, out, in1, in2);
-  }
-};
-
-template <typename T, int NDIMS>
-struct TransposeFunctor<CPUDevice, T, NDIMS> {
-  void operator()(const CPUDevice &d, typename TTypes<T, NDIMS>::ConstTensor in,
-                  const Eigen::array<int, NDIMS> &p,
-                  typename TTypes<T, NDIMS>::Tensor out) {
-    TransposeEigenImpl<CPUDevice, T, NDIMS>::Compute(d, in, p, out);
   }
 };
 
@@ -541,10 +526,9 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
                    context->allocate_temp(DataTypeToEnum<T>::value,
                                           output_grad_tensor_transposed_shape,
                                           &output_grad_tensor_transposed));
-    OP_REQUIRES_OK(context,
-                   Transpose<Device, T, 5>(context, output_grad_tensor_reshaped,
-                                           {0, 2, 1, 3, 4},
-                                           &output_grad_tensor_transposed));
+    TransposeUsingEigen<Device, T, 5>(
+        context->eigen_device<Device>(), output_grad_tensor_reshaped,
+        {0, 2, 1, 3, 4}, &output_grad_tensor_transposed);
 
     TensorShape output_shape =
         ShapeFromFormat(data_format, p.input_batches, p.output_rows,
