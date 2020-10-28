@@ -17,7 +17,6 @@
 #define TENSORFLOW_ADDONS_LAYERS_KERNELS_DEFORMABLECONV2D_OP_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/kernels/aggregate_ops.h"
 #include "tensorflow/core/kernels/batch_matmul_op_impl.h"
 #include "tensorflow/core/util/tensor_format.h"
 
@@ -50,36 +49,52 @@ struct DeformableConv2DParams {
   bool use_bias;
 };
 
-namespace functor {
-
-template <typename Device, typename T>
-struct SetZeroFunctor {
-  void operator()(const Device &d, typename TTypes<T>::Flat out);
-};
-
-}  // namespace functor
-
 template <typename Device, typename T>
 Status TensorSetZero(OpKernelContext *ctx, Tensor *value) {
-  functor::SetZeroFunctor<Device, T> set_zero_functor;
-  set_zero_functor(ctx->template eigen_device<Device>(), value->flat<T>());
+  const auto d = ctx->template eigen_device<Device>();
+  auto out = value->flat<T>();
+
+  const bool use_64bit = out.size() > Eigen::NumTraits<int>::highest();
+
+  if (!use_64bit && Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+    To32Bit(out).device(d) = To32Bit(out).constant(T(0));
+  } else {
+    out.device(d) = out.constant(T(0));
+  }
+
   return Status::OK();
 }
 
 template <typename Device, typename T>
 Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
                    const Tensor *add) {
-  ::tensorflow::functor::Add2EigenImpl<Device, T>::Compute(
-      ctx->template eigen_device<Device>(), sum->flat<T>(), current->flat<T>(),
-      add->flat<T>());
+  const auto d = ctx->template eigen_device<Device>();
+
+  auto out = sum->flat<T>();
+  auto a = current->flat<T>();
+  auto b = add->flat<T>();
+
+  const bool use_64bit = out.size() > Eigen::NumTraits<int>::highest();
+
+  if (!use_64bit && Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+    To32Bit(out).device(d) = To32Bit(a) + To32Bit(b);
+  } else {
+    out.device(d) = a + b;
+  }
+
   return Status::OK();
 }
 
 template <typename Device, typename T, int NDIMS>
-void TransposeUsingEigen(const Device &d, const Tensor &in,
-                         const gtl::ArraySlice<int32> perm, Tensor *out) {
+Status Transpose(OpKernelContext *ctx, const Tensor &in,
+                           const gtl::ArraySlice<int32> perm, Tensor *out) {
+  const auto d = ctx->template eigen_device<Device>();
+
   Eigen::array<int, NDIMS> p;
-  for (int i = 0; i < NDIMS; ++i) p[i] = perm[i];
+  for (int i = 0; i < NDIMS; ++i) {
+    p[i] = perm[i];
+  }
+
   auto x = typename TTypes<T, NDIMS>::ConstTensor(
       reinterpret_cast<const T *>(in.tensor_data().data()),
       in.shape().AsEigenDSizes<NDIMS>());
@@ -87,7 +102,53 @@ void TransposeUsingEigen(const Device &d, const Tensor &in,
       reinterpret_cast<T *>(const_cast<char *>(out->tensor_data().data())),
       out->shape().AsEigenDSizes<NDIMS>());
 
-  y.device(d) = x.shuffle(p);
+  const bool use_64bit = x.size() > Eigen::NumTraits<int>::highest();
+
+  if (!use_64bit && Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+    To32Bit(y).device(d) = To32Bit(x).shuffle(p);
+  } else {
+    y.device(d) = x.shuffle(p);
+  }
+
+  return Status::OK();
+}
+
+template <typename Device, typename T>
+Status CopySliceToElement(OpKernelContext *ctx, const Tensor &parent,
+                          Tensor *element, int64 index) {
+  const auto d = ctx->template eigen_device<Device>();
+
+  auto out = element->flat<T>();
+  auto in = parent.flat_outer_dims<T>();
+
+  const bool use_64bit = out.size() > Eigen::NumTraits<int>::highest();
+
+  if (!use_64bit && Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+    To32Bit(out).device(d) = To32Bit(in).chip(index, 0);
+  } else {
+    out.device(d) = in.chip(index, 0);
+  }
+
+  return Status::OK();
+}
+
+template <typename Device, typename T>
+Status CopyElementToSlice(OpKernelContext *ctx, Tensor element, Tensor *parent,
+                          int64 index) {
+  const auto d = ctx->template eigen_device<Device>();
+
+  auto out = parent->flat_outer_dims<T>();
+  auto in = element.flat<T>();
+
+  const bool use_64bit = out.size() > Eigen::NumTraits<int>::highest();
+
+  if (!use_64bit && Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+    To32Bit(out).chip(index, 0).device(d) = To32Bit(in);
+  } else {
+    out.chip(index, 0).device(d) = in;
+  }
+
+  return Status::OK();
 }
 
 namespace functor {
@@ -314,8 +375,8 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
       LaunchBatchMatMul<Device, T>::Launch(context, lhs, rhs, false, false,
                                            false, false, bcast, &out);
 
-      TF_RETURN_IF_ERROR(
-          batch_util::CopyElementToSlice(out, &output_tmp_tensor_reshaped, b));
+      TF_RETURN_IF_ERROR(CopyElementToSlice<Device, T>(
+          context, out, &output_tmp_tensor_reshaped, b));
     }
 
     Tensor output_tensor_reshaped(output_tensor.dtype());
@@ -323,9 +384,8 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
         output_tensor,
         TensorShape({p.batches, p.parallel_imgs, p.output_channels,
                      p.output_rows, p.output_cols})));
-    TransposeUsingEigen<Device, T, 5>(context->eigen_device<Device>(),
-                                      output_tmp_tensor, {0, 2, 1, 3, 4},
-                                      &output_tensor_reshaped);
+    TF_RETURN_IF_ERROR(Transpose<Device, T, 5>(
+        context, output_tmp_tensor, {0, 2, 1, 3, 4}, &output_tensor_reshaped));
 
     if (p.use_bias) {
       // FIXME: GPUで動くか確認
@@ -450,8 +510,9 @@ struct DeformableConv2DGradFunctor
       auto rhs = column_buffer_tensor_reshaped;
       auto out = matmul_out_tmp_tensor;
 
-      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
-                                  output_grad_tensor_reshaped, &lhs, b));
+      OP_REQUIRES_OK(context,
+                     CopySliceToElement<Device, T>(
+                         context, output_grad_tensor_reshaped, &lhs, b));
 
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 
@@ -491,8 +552,9 @@ struct DeformableConv2DGradFunctor
       auto rhs = matmul_rhs_tmp_tensor;
       auto out = column_buffer_tensor_reshaped;
 
-      OP_REQUIRES_OK(context, batch_util::CopySliceToElement(
-                                  output_grad_tensor_reshaped, &rhs, b));
+      OP_REQUIRES_OK(context,
+                     CopySliceToElement<Device, T>(
+                         context, output_grad_tensor_reshaped, &rhs, b));
 
       MatMulBCast bcast(lhs.shape().dim_sizes(), rhs.shape().dim_sizes());
 

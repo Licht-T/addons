@@ -29,13 +29,6 @@ using GPUDevice = Eigen::GpuDevice;
 namespace functor {
 
 template <typename T>
-struct SetZeroFunctor<GPUDevice, T> {
-  void operator()(const GPUDevice &d, typename TTypes<T>::Flat out) {
-    To32Bit(out).device(d) = To32Bit(out).constant(T(0));
-  }
-};
-
-template <typename T>
 __global__ void DeformableIm2ColKernel(
     int32 b, int32 num_kernels, DeformableConv2DParams p,
     typename TTypes<T, 5>::Tensor input_eigen_tensor,
@@ -370,10 +363,10 @@ TF_CALL_double(EXPLICIT_TEMPLATE);
 
 }  // end namespace functor
 
-#define EXPLICIT_TEMPLATE(T)                                                   \
-  template void TransposeUsingEigen<GPUDevice, T, 5>(                          \
-      const GPUDevice &d, const Tensor &in, const gtl::ArraySlice<int32> perm, \
-      Tensor *out);
+#define EXPLICIT_TEMPLATE(T)                   \
+  template Status Transpose<GPUDevice, T, 5>(  \
+      OpKernelContext * ctx, const Tensor &in, \
+      const gtl::ArraySlice<int32> perm, Tensor *out);
 TF_CALL_float(EXPLICIT_TEMPLATE);
 TF_CALL_double(EXPLICIT_TEMPLATE);
 #undef EXPLICIT_TEMPLATE
