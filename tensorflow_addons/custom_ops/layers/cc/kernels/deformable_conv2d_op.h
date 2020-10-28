@@ -334,8 +334,6 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
   }
 
   Status operator()(OpKernelContext *context) {
-    TF_RETURN_IF_ERROR(TensorSetZero<Device, T>(context, &output_tensor));
-
     // input_channels * filter_rows * filter_cols / weight_groups ==
     // filter_channels * filter_rows * filter_cols
     const auto elems = p.filter_channels * p.filter_rows * p.filter_cols;
@@ -465,7 +463,7 @@ struct DeformableConv2DGradFunctor
       // FIXME: GPUで動くか確認
       const auto output_grad_eigen_tensor = output_grad_tensor.tensor<T, 5>();
 
-      const Device &d = context->eigen_device<Device>();
+      const Device d = context->eigen_device<Device>();
 
       bias_grad_tensor.tensor<T, 1>().device(d) =
           output_grad_eigen_tensor.sum(Eigen::array<int, 4>({0, 2, 3, 4}));
