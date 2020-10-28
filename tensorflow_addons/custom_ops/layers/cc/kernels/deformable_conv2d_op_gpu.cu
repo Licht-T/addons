@@ -247,7 +247,7 @@ __global__ void DeformableCol2ImForInputKernel(
 
           const auto current_actual_batch = b * p.parallel_imgs + current_batch;
 
-          const auto *ptr = input_grad_eigen_tensor.data();
+          auto *ptr = input_grad_eigen_tensor.data();
 
           const auto ptr_pos =
               ((current_actual_batch * p.input_channels + current_channel) *
