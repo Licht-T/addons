@@ -40,8 +40,8 @@ TF_CALL_double(EXTERN_TEMPLATE);
 
 namespace functor {
 
-#define EXTERN_TEMPLATE(T)                                      \
-  extern template struct DeformableConv2DFunctor<GPUDevice, T>; \
+#define EXTERN_TEMPLATE(T)                                             \
+  extern template struct DeformableConv2DForwardFunctor<GPUDevice, T>; \
   extern template struct DeformableConv2DGradFunctor<GPUDevice, T>;
 TF_CALL_float(EXTERN_TEMPLATE);
 TF_CALL_double(EXTERN_TEMPLATE);
@@ -435,12 +435,12 @@ class DeformableConv2DOpBase : public OpKernel {
 };
 
 template <typename Device, typename T>
-class DeformableConv2DOp : public DeformableConv2DOpBase<Device, T> {
+class DeformableConv2DForwardOp : public DeformableConv2DOpBase<Device, T> {
   using DeformableConv2DOpBase<Device, T>::data_format;
   using DeformableConv2DOpBase<Device, T>::p;
 
  public:
-  explicit DeformableConv2DOp(OpKernelConstruction *context)
+  explicit DeformableConv2DForwardOp(OpKernelConstruction *context)
       : DeformableConv2DOpBase<Device, T>(context) {}
 
   void Compute(OpKernelContext *context) override {
@@ -467,7 +467,7 @@ class DeformableConv2DOp : public DeformableConv2DOpBase<Device, T> {
     OP_REQUIRES_OK(context,
                    context->allocate_output(0, output_shape, &output_tensor));
 
-    functor::DeformableConv2DFunctor<Device, T> deformableConv2DFunc(
+    functor::DeformableConv2DForwardFunctor<Device, T> deformableConv2DFunc(
         &input_tensor, &filter_tensor, &bias_tensor, &offset_tensor,
         &mask_tensor, &column_buffer_tensor, output_tensor, &p);
     Status s = deformableConv2DFunc(context);
@@ -560,14 +560,14 @@ class DeformableConv2DGradOp : public DeformableConv2DOpBase<Device, T> {
 };
 
 // Register the CPU kernels.
-#define REGISTER_DEFORMABLECONV2D_OP_CPU(T)                   \
-  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2D")     \
-                              .Device(DEVICE_CPU)             \
-                              .TypeConstraint<T>("T"),        \
-                          DeformableConv2DOp<CPUDevice, T>)   \
-  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2DGrad") \
-                              .Device(DEVICE_CPU)             \
-                              .TypeConstraint<T>("T"),        \
+#define REGISTER_DEFORMABLECONV2D_OP_CPU(T)                        \
+  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2D")          \
+                              .Device(DEVICE_CPU)                  \
+                              .TypeConstraint<T>("T"),             \
+                          DeformableConv2DForwardOp<CPUDevice, T>) \
+  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2DGrad")      \
+                              .Device(DEVICE_CPU)                  \
+                              .TypeConstraint<T>("T"),             \
                           DeformableConv2DGradOp<CPUDevice, T>)
 
 TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_CPU);
@@ -575,14 +575,14 @@ TF_CALL_double(REGISTER_DEFORMABLECONV2D_OP_CPU);
 #undef REGISTER_DEFORMABLECONV2D_OP_CPU
 
 // Register the GPU kernels.
-#define REGISTER_DEFORMABLECONV2D_OP_GPU(T)                   \
-  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2D")     \
-                              .Device(DEVICE_GPU)             \
-                              .TypeConstraint<T>("T"),        \
-                          DeformableConv2DOp<GPUDevice, T>)   \
-  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2DGrad") \
-                              .Device(DEVICE_GPU)             \
-                              .TypeConstraint<T>("T"),        \
+#define REGISTER_DEFORMABLECONV2D_OP_GPU(T)                        \
+  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2D")          \
+                              .Device(DEVICE_GPU)                  \
+                              .TypeConstraint<T>("T"),             \
+                          DeformableConv2DForwardOp<GPUDevice, T>) \
+  REGISTER_KERNEL_BUILDER(Name("Addons>DeformableConv2DGrad")      \
+                              .Device(DEVICE_GPU)                  \
+                              .TypeConstraint<T>("T"),             \
                           DeformableConv2DGradOp<GPUDevice, T>)
 
 TF_CALL_float(REGISTER_DEFORMABLECONV2D_OP_GPU);

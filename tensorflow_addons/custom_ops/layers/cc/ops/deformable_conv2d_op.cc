@@ -90,7 +90,6 @@ REGISTER_OP("Addons>DeformableConv2D")
       DimensionHandle mask_heights_dim = c->Dim(mask_shape, 2);
       DimensionHandle mask_weights_dim = c->Dim(mask_shape, 3);
 
-      // FIXME: !!!!!!!!
       bool use_mask = InferenceContext::Value(mask_batches_dim) != 0;
       bool use_bias = InferenceContext::Value(bias_dim) != 0;
 

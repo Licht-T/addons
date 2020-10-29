@@ -362,8 +362,8 @@ TF_CALL_float(COL2IM_INPUT);
 TF_CALL_double(COL2IM_INPUT);
 #undef COL2IM_INPUT
 
-#define EXPLICIT_TEMPLATE(T)                             \
-  template struct DeformableConv2DFunctor<GPUDevice, T>; \
+#define EXPLICIT_TEMPLATE(T)                                    \
+  template struct DeformableConv2DForwardFunctor<GPUDevice, T>; \
   template struct DeformableConv2DGradFunctor<GPUDevice, T>;
 TF_CALL_float(EXPLICIT_TEMPLATE);
 TF_CALL_double(EXPLICIT_TEMPLATE);

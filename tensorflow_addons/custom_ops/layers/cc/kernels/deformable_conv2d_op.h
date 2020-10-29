@@ -87,7 +87,7 @@ Status AddToTensor(OpKernelContext *ctx, Tensor *sum, const Tensor *current,
 
 template <typename Device, typename T, int NDIMS>
 Status Transpose(OpKernelContext *ctx, const Tensor &in,
-                           const gtl::ArraySlice<int32> perm, Tensor *out) {
+                 const gtl::ArraySlice<int32> perm, Tensor *out) {
   const auto d = ctx->template eigen_device<Device>();
 
   Eigen::array<int, NDIMS> p;
@@ -121,7 +121,7 @@ Status CopySliceToElement(OpKernelContext *ctx, const Tensor &parent,
   auto out = element->flat<T>();
   auto in = parent.flat_outer_dims<T>();
 
-  const bool use_64bit = out.size() > Eigen::NumTraits<int>::highest();
+  const bool use_64bit = in.size() > Eigen::NumTraits<int>::highest();
 
   if (!use_64bit && Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
     To32Bit(out).device(d) = To32Bit(in).chip(index, 0);
@@ -310,7 +310,8 @@ struct DeformableConv2DFunctorBase {
 };
 
 template <typename Device, typename T>
-struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
+struct DeformableConv2DForwardFunctor
+    : public DeformableConv2DFunctorBase<Device, T> {
   using DeformableConv2DFunctorBase<Device, T>::input_tensor;
   using DeformableConv2DFunctorBase<Device, T>::filter_tensor;
   using DeformableConv2DFunctorBase<Device, T>::bias_tensor;
@@ -319,13 +320,11 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
   using DeformableConv2DFunctorBase<Device, T>::column_buffer_tensor;
   using DeformableConv2DFunctorBase<Device, T>::p;
 
-  DeformableConv2DFunctor(const Tensor *_input_tensor,
-                          const Tensor *_filter_tensor,
-                          const Tensor *_bias_tensor,
-                          const Tensor *_offset_tensor,
-                          const Tensor *_mask_tensor,
-                          Tensor *_column_buffer_tensor, Tensor *_output_tensor,
-                          DeformableConv2DParams *_p)
+  DeformableConv2DForwardFunctor(
+      const Tensor *_input_tensor, const Tensor *_filter_tensor,
+      const Tensor *_bias_tensor, const Tensor *_offset_tensor,
+      const Tensor *_mask_tensor, Tensor *_column_buffer_tensor,
+      Tensor *_output_tensor, DeformableConv2DParams *_p)
       : DeformableConv2DFunctorBase<Device, T>(
             _input_tensor, _filter_tensor, _bias_tensor, _offset_tensor,
             _mask_tensor, _column_buffer_tensor, _p),
@@ -386,17 +385,24 @@ struct DeformableConv2DFunctor : public DeformableConv2DFunctorBase<Device, T> {
         context, output_tmp_tensor, {0, 2, 1, 3, 4}, &output_tensor_reshaped));
 
     if (p.use_bias) {
-      // FIXME: GPUで動くか確認
       Eigen::DSizes<int32, 4> four_dims(1, p.output_channels, 1, 1);
       Eigen::DSizes<int32, 4> broadcast_dims(p.input_batches, 1, p.output_rows,
                                              p.output_cols);
-      const Device &d = context->eigen_device<Device>();
 
-      auto bias_tensor_broadcasted =
-          bias_tensor.template tensor<T, 1>().reshape(four_dims).broadcast(
-              broadcast_dims);
+      const auto d = context->eigen_device<Device>();
 
-      output_tensor.tensor<T, 4>().device(d) += bias_tensor_broadcasted;
+      auto out = output_tensor.tensor<T, 4>();
+      auto add = bias_tensor.template tensor<T, 1>();
+
+      const bool use_64bit = out.size() > Eigen::NumTraits<int>::highest();
+
+      if (!use_64bit &&
+          Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+        To32Bit(out).device(d) +=
+            To32Bit(add).reshape(four_dims).broadcast(broadcast_dims);
+      } else {
+        out.device(d) += add.reshape(four_dims).broadcast(broadcast_dims);
+      }
     }
 
     return Status::OK();
@@ -460,13 +466,21 @@ struct DeformableConv2DGradFunctor
     ComputeFilterGrad(context);
 
     if (p.use_bias) {
-      // FIXME: GPUで動くか確認
-      const auto output_grad_eigen_tensor = output_grad_tensor.tensor<T, 5>();
+      const auto d = context->eigen_device<Device>();
 
-      const Device d = context->eigen_device<Device>();
+      auto out = bias_grad_tensor.tensor<T, 1>();
+      auto in = output_grad_tensor.tensor<T, 5>();
 
-      bias_grad_tensor.tensor<T, 1>().device(d) =
-          output_grad_eigen_tensor.sum(Eigen::array<int, 4>({0, 2, 3, 4}));
+      const bool use_64bit = in.size() > Eigen::NumTraits<int>::highest();
+
+      const Eigen::array<int, 4> axes({0, 2, 3, 4});
+
+      if (!use_64bit &&
+          Eigen::internal::is_same<Device, Eigen::GpuDevice>::value) {
+        To32Bit(out).device(d) = To32Bit(in).sum(axes);
+      } else {
+        out.device(d) = in.sum(axes);
+      }
     }
 
     return Status::OK();
@@ -503,7 +517,6 @@ struct DeformableConv2DGradFunctor
     for (auto b = 0; b < p.batches; b++) {
       this->DeformableIm2Col(context, b);
 
-      // FIXME: !!!!!
       auto lhs = matmul_lhs_tmp_tensor;
       auto rhs = column_buffer_tensor_reshaped;
       auto out = matmul_out_tmp_tensor;
